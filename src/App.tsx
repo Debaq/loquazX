@@ -1,50 +1,51 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
+import TopBar from "./components/TopBar";
+import SegmentsList from "./components/SegmentsList";
+import VideoPreview from "./components/VideoPreview";
+import EditPanel from "./components/EditPanel";
+import Transport from "./components/Transport";
+import type { Segment } from "./types";
+
+const segmentosDemo: Segment[] = [
+  { id: "s1", start: 0, end: 3.2, source: "Hola, bienvenidos al video.", translation: "" },
+  { id: "s2", start: 3.2, end: 7.8, source: "Hoy hablaremos de loquazX.", translation: "" },
+  { id: "s3", start: 7.8, end: 12.0, source: "Una herramienta de subtitulado.", translation: "" },
+];
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const [segments, setSegments] = useState<Segment[]>(segmentosDemo);
+  const [selectedId, setSelectedId] = useState<string | null>(segmentosDemo[0]?.id ?? null);
+  const [projectName] = useState<string>("Proyecto sin título");
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+  const selected = segments.find((s) => s.id === selectedId) ?? null;
+
+  function actualizarSegmento(id: string, cambios: Partial<Segment>) {
+    setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, ...cambios } : s)));
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="app">
+      <TopBar projectName={projectName} />
+      <div className="app__body">
+        <aside className="app__left">
+          <SegmentsList
+            segments={segments}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+          />
+        </aside>
+        <main className="app__center">
+          <VideoPreview />
+        </main>
+        <aside className="app__right">
+          <EditPanel segment={selected} onChange={actualizarSegmento} />
+        </aside>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      <footer className="app__footer">
+        <Transport />
+      </footer>
+    </div>
   );
 }
 
