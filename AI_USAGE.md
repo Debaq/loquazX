@@ -39,6 +39,24 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 **Commits asociados:** se enlazarán los SHAs una vez creados.
 
+### 2026-05-05 — ADR-002 (formato de proyecto) e interfaz base
+
+**Herramienta:** Claude Opus 4.7 (1M context)
+
+**Contexto:** Smoke test del scaffold Tauri (verificación de que `npm run tauri dev` arranca y abre la ventana). A continuación, redacción de un ADR propuesto para definir el formato de proyecto y construcción de una interfaz base como punto de partida antes de implementar la carga de video y la extracción de audio.
+
+**Aporte de la IA:** Borrador de ADR-002 con tres alternativas de formato y decisión por carpeta `.lqzx`. Estructura de componentes React (`TopBar`, `SegmentsList`, `VideoPreview`, `EditPanel`, `Transport`), tipo `Segment`, layout en grid con tema oscuro y datos demo. Sin lógica de carga ni invocación a comandos de Tauri todavía.
+
+**Decisiones humanas:**
+
+- Hacer smoke test antes de avanzar con cualquier feature.
+- Priorizar la interfaz visible antes de la carga de video.
+- ADR-002 queda en estado *Propuesta* hasta resolver puntos abiertos (copia vs. referencia del video, política de purga de runs).
+
+**Revisión humana:** Verificación visual de la ventana Tauri tras los cambios y aprobación de los dos commits.
+
+**Commits asociados:** `e60224b` (ADR-002), `91fb701` (interfaz base).
+
 ---
 
 ## Plantilla en blanco para nuevas entradas
