@@ -1,0 +1,60 @@
+# Registro de uso de IA
+
+Este archivo documenta el uso de herramientas de IA generativa en el desarrollo de loquazX. Se actualiza durante el desarrollo, no al final.
+
+## Política
+
+- Se usa IA cuando es útil y se declara siempre.
+- Las decisiones de diseño centrales son humanas, no de la IA.
+- Toda salida de IA se revisa, edita y testea antes de incluirse en el proyecto.
+- La IA no se usa para conversaciones con revisores ni editores (excepto traducción, cuando el idioma sea barrera real).
+
+## Resumen de herramientas usadas
+
+| Herramienta            | Versión                | Usos principales                                          |
+|------------------------|------------------------|-----------------------------------------------------------|
+| Claude Opus 4.7 (1M)   | 2026-01                | Bootstrap del repositorio, scaffolding inicial, ADRs      |
+
+Esta tabla se actualizará cuando se sumen nuevas herramientas.
+
+## Registro cronológico
+
+### 2026-05-05 — Bootstrap del repositorio
+
+**Herramienta:** Claude Opus 4.7 (1M context)
+
+**Contexto:** Creación inicial del repositorio loquazX siguiendo las prácticas del lab-handbook. Se partió de un prototipo previo en Python (`subdub`) que validó el flujo de trabajo (transcripción con whisper, traducción, TTS con edge-tts y mezcla con ffmpeg).
+
+**Aporte de la IA:** Generación del scaffold Tauri 2 + Vite + React, redacción inicial de README, CONTRIBUTING, CODE_OF_CONDUCT, CHANGELOG, plantillas de issues y pull requests, y borrador del workflow de CI. Borrador del ADR-001.
+
+**Decisiones humanas:**
+
+- Nombre del proyecto (`loquazX`).
+- Stack: Tauri 2 + Rust + Vite + React + TypeScript.
+- Licencia AGPL-3.0.
+- Visibilidad pública desde el primer commit.
+- Idioma de la documentación: español neutro.
+
+**Revisión humana:** Cada archivo generado se revisará antes del primer push y los textos se ajustarán al estilo del lab-handbook.
+
+**Commits asociados:** se enlazarán los SHAs una vez creados.
+
+---
+
+## Plantilla en blanco para nuevas entradas
+
+```
+### YYYY-MM-DD — [Descripción breve]
+
+**Herramienta:** [Nombre y versión]
+
+**Contexto:** [Qué se estaba haciendo].
+
+**Aporte de la IA:** [Qué generó].
+
+**Decisiones humanas:** [Qué decidió la persona].
+
+**Revisión humana:** [Qué se revisó y modificó].
+
+**Commits asociados:** [SHAs o enlaces].
+```
