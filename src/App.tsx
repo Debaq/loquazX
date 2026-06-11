@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open, save, message } from "@tauri-apps/plugin-dialog";
+import { ask, open, save, message } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 import TopBar from "./components/TopBar";
 import SegmentsList from "./components/SegmentsList";
@@ -55,6 +55,38 @@ function App() {
     }
   }
 
+  async function importarVideo() {
+    if (!project) return;
+    const ruta = await open({
+      title: "Importar video",
+      filters: [
+        { name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "avi"] },
+      ],
+    });
+    if (!ruta) return;
+    // ADR-002: el video se copia o se referencia según preferencia del usuario.
+    const copiar = await ask(
+      "¿Copiar el video dentro del proyecto?\n\nCopiar: el proyecto queda autocontenido.\nReferenciar: se usa la ruta original sin duplicar el archivo.",
+      {
+        title: "Importar video",
+        kind: "info",
+        okLabel: "Copiar al proyecto",
+        cancelLabel: "Solo referenciar",
+      },
+    );
+    try {
+      const proyecto = await invoke<Project>("importar_video", {
+        path: project.path,
+        video: ruta,
+        copiar,
+      });
+      // Solo se actualiza el proyecto: los segmentos locales sin guardar se conservan.
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Importar video", kind: "error" });
+    }
+  }
+
   async function guardarProyecto() {
     if (!project) return;
     try {
@@ -89,7 +121,11 @@ function App() {
           />
         </aside>
         <main className="app__center">
-          <VideoPreview />
+          <VideoPreview
+            videoPath={project?.video_path ?? null}
+            hasProject={project !== null}
+            onImport={importarVideo}
+          />
         </main>
         <aside className="app__right">
           <EditPanel segment={selected} onChange={actualizarSegmento} />
