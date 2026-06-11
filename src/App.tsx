@@ -1,50 +1,104 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
+import { open, save, message } from "@tauri-apps/plugin-dialog";
 import "./App.css";
+import TopBar from "./components/TopBar";
+import SegmentsList from "./components/SegmentsList";
+import VideoPreview from "./components/VideoPreview";
+import EditPanel from "./components/EditPanel";
+import Transport from "./components/Transport";
+import type { Project, Segment } from "./types";
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const [project, setProject] = useState<Project | null>(null);
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+  const selected = segments.find((s) => s.id === selectedId) ?? null;
+
+  function cargarProyecto(proyecto: Project) {
+    setProject(proyecto);
+    setSegments(proyecto.segments);
+    setSelectedId(proyecto.segments[0]?.id ?? null);
+  }
+
+  async function nuevoProyecto() {
+    const ruta = await save({
+      title: "Nuevo proyecto",
+      defaultPath: "proyecto.lqzx",
+    });
+    if (!ruta) return;
+    const nombre =
+      ruta.split(/[\\/]/).pop()?.replace(/\.lqzx$/, "") ?? "Proyecto";
+    try {
+      const proyecto = await invoke<Project>("crear_proyecto", {
+        path: ruta,
+        nombre,
+        // Idiomas por defecto hasta que exista selector en la UI.
+        idiomaOrigen: "es",
+        idiomaDestino: "en",
+      });
+      cargarProyecto(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Nuevo proyecto", kind: "error" });
+    }
+  }
+
+  async function abrirProyecto() {
+    const ruta = await open({ title: "Abrir proyecto", directory: true });
+    if (!ruta) return;
+    try {
+      const proyecto = await invoke<Project>("abrir_proyecto", { path: ruta });
+      cargarProyecto(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Abrir proyecto", kind: "error" });
+    }
+  }
+
+  async function guardarProyecto() {
+    if (!project) return;
+    try {
+      await invoke("guardar_segmentos", {
+        path: project.path,
+        segmentos: segments,
+      });
+    } catch (e) {
+      await message(String(e), { title: "Guardar", kind: "error" });
+    }
+  }
+
+  function actualizarSegmento(id: string, cambios: Partial<Segment>) {
+    setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, ...cambios } : s)));
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="app">
+      <TopBar
+        projectName={project?.manifest.name ?? "Sin proyecto"}
+        canSave={project !== null}
+        onNew={nuevoProyecto}
+        onOpen={abrirProyecto}
+        onSave={guardarProyecto}
+      />
+      <div className="app__body">
+        <aside className="app__left">
+          <SegmentsList
+            segments={segments}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+          />
+        </aside>
+        <main className="app__center">
+          <VideoPreview />
+        </main>
+        <aside className="app__right">
+          <EditPanel segment={selected} onChange={actualizarSegmento} />
+        </aside>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      <footer className="app__footer">
+        <Transport />
+      </footer>
+    </div>
   );
 }
 
