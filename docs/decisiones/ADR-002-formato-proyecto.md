@@ -1,7 +1,7 @@
 # ADR-002: Formato de proyecto loquazX
 
 - Fecha: 2026-05-05
-- Estado: Propuesta
+- Estado: Aceptada (2026-06-11)
 - Decisor: Nicolás Baier
 
 ## Contexto

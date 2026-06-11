@@ -68,10 +68,10 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 **Decisiones humanas:**
 
-- ADR-002 se mantiene en estado *Propuesta*: los puntos abiertos (copia vs. referencia del video, purga de runs) siguen sin resolverse y la aceptación formal queda pendiente.
+- ADR-002 pasa a *Aceptada* (2026-06-11); los puntos abiertos (copia vs. referencia del video, purga de runs) se resolverán en ADRs o issues posteriores.
 - Idiomas por defecto `es` → `en` hasta que exista selector en la UI.
 
-**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
+**Revisión humana:** Revisado y aprobado por Nicolás en el PR #3.
 
 **Commits asociados:** se enlazarán en el PR que cierra #2.
 
