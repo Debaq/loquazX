@@ -13,6 +13,7 @@ function App() {
   const [project, setProject] = useState<Project | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [extractingAudio, setExtractingAudio] = useState(false);
 
   const selected = segments.find((s) => s.id === selectedId) ?? null;
 
@@ -87,6 +88,22 @@ function App() {
     }
   }
 
+  async function extraerAudio() {
+    if (!project?.video_path) return;
+    setExtractingAudio(true);
+    try {
+      const proyecto = await invoke<Project>("extraer_audio", {
+        path: project.path,
+      });
+      // Solo se actualiza el proyecto: los segmentos locales sin guardar se conservan.
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Extraer audio", kind: "error" });
+    } finally {
+      setExtractingAudio(false);
+    }
+  }
+
   async function guardarProyecto() {
     if (!project) return;
     try {
@@ -108,9 +125,13 @@ function App() {
       <TopBar
         projectName={project?.manifest.name ?? "Sin proyecto"}
         canSave={project !== null}
+        canExtractAudio={project?.video_path != null}
+        extractingAudio={extractingAudio}
+        hasAudio={project?.audio_path != null}
         onNew={nuevoProyecto}
         onOpen={abrirProyecto}
         onSave={guardarProyecto}
+        onExtractAudio={extraerAudio}
       />
       <div className="app__body">
         <aside className="app__left">

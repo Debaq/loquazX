@@ -31,6 +31,9 @@ Decisiones detalladas en [`docs/decisiones/`](docs/decisiones/).
 
 Pendiente. Requiere compilación desde el código fuente hasta la primera release con binarios.
 
+Requisito en tiempo de ejecución: `ffmpeg` instalado y disponible en el `PATH`
+(ADR-003). En Linux está en los repositorios oficiales de todas las distribuciones.
+
 ```bash
 git clone https://github.com/Debaq/loquazX.git
 cd loquazX

@@ -12,6 +12,11 @@ export interface SourceVideo {
   original_path: string;
 }
 
+export interface ExtractedAudio {
+  file: string;
+  extracted_at: number;
+}
+
 export interface ProjectManifest {
   id: string;
   format_version: number;
@@ -20,6 +25,7 @@ export interface ProjectManifest {
   target_language: string;
   created_at: number;
   source?: SourceVideo;
+  audio?: ExtractedAudio;
 }
 
 export interface Project {
@@ -27,4 +33,5 @@ export interface Project {
   manifest: ProjectManifest;
   segments: Segment[];
   video_path: string | null;
+  audio_path: string | null;
 }
