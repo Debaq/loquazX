@@ -75,6 +75,23 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 **Commits asociados:** se enlazarán en el PR que cierra #2.
 
+### 2026-06-11 — Importación y previsualización de video
+
+**Herramienta:** Claude Fable 5 (Claude Code)
+
+**Contexto:** Con el formato de proyecto mergeado (PR #3), siguiente paso del flujo: cargar el video original al proyecto (issue #4).
+
+**Aporte de la IA:** Función `import_video` en `project.rs` con modos copia/referencia y campo opcional `source` en el manifiesto (compatible con proyectos previos), comando Tauri `importar_video`, cinco tests nuevos, reproducción del video en `VideoPreview` vía protocolo de assets (alcance `$HOME/**`), y diálogo de elección copiar/referenciar al importar.
+
+**Decisiones humanas:**
+
+- Continuar con la carga de video como siguiente feature.
+- El punto abierto del ADR-002 (copia vs. referencia) se resuelve como lo prevé el propio ADR: preferencia del usuario al importar.
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
+
+**Commits asociados:** se enlazarán en el PR que cierra #4.
+
 ---
 
 ## Plantilla en blanco para nuevas entradas
