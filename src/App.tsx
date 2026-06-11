@@ -14,6 +14,7 @@ function App() {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [extractingAudio, setExtractingAudio] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
 
   const selected = segments.find((s) => s.id === selectedId) ?? null;
 
@@ -104,6 +105,38 @@ function App() {
     }
   }
 
+  async function transcribir() {
+    if (!project?.audio_path) return;
+    // ADR-004: la transcripción reemplaza los segmentos existentes.
+    if (segments.length > 0) {
+      const continuar = await ask(
+        "Transcribir reemplazará todos los segmentos actuales.\n\n¿Continuar?",
+        { title: "Transcribir", kind: "warning" },
+      );
+      if (!continuar) return;
+    }
+    // ADR-004: el usuario elige el modelo GGML; se recuerda la última ruta.
+    const modelo = await open({
+      title: "Seleccionar modelo whisper (GGML)",
+      defaultPath: localStorage.getItem("loquazx.whisperModel") ?? undefined,
+      filters: [{ name: "Modelo GGML", extensions: ["bin"] }],
+    });
+    if (!modelo) return;
+    localStorage.setItem("loquazx.whisperModel", modelo);
+    setTranscribing(true);
+    try {
+      const proyecto = await invoke<Project>("transcribir", {
+        path: project.path,
+        modelo,
+      });
+      cargarProyecto(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Transcribir", kind: "error" });
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
   async function guardarProyecto() {
     if (!project) return;
     try {
@@ -128,10 +161,13 @@ function App() {
         canExtractAudio={project?.video_path != null}
         extractingAudio={extractingAudio}
         hasAudio={project?.audio_path != null}
+        transcribing={transcribing}
+        hasSegments={segments.length > 0}
         onNew={nuevoProyecto}
         onOpen={abrirProyecto}
         onSave={guardarProyecto}
         onExtractAudio={extraerAudio}
+        onTranscribe={transcribir}
       />
       <div className="app__body">
         <aside className="app__left">

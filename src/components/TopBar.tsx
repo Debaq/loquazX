@@ -4,10 +4,13 @@ interface Props {
   canExtractAudio: boolean;
   extractingAudio: boolean;
   hasAudio: boolean;
+  transcribing: boolean;
+  hasSegments: boolean;
   onNew: () => void;
   onOpen: () => void;
   onSave: () => void;
   onExtractAudio: () => void;
+  onTranscribe: () => void;
 }
 
 function TopBar({
@@ -16,10 +19,13 @@ function TopBar({
   canExtractAudio,
   extractingAudio,
   hasAudio,
+  transcribing,
+  hasSegments,
   onNew,
   onOpen,
   onSave,
   onExtractAudio,
+  onTranscribe,
 }: Props) {
   return (
     <header className="topbar">
@@ -38,6 +44,17 @@ function TopBar({
             : hasAudio
               ? "Reextraer audio"
               : "Extraer audio"}
+        </button>
+        <button
+          type="button"
+          onClick={onTranscribe}
+          disabled={!hasAudio || transcribing || extractingAudio}
+        >
+          {transcribing
+            ? "Transcribiendo…"
+            : hasSegments
+              ? "Retranscribir"
+              : "Transcribir"}
         </button>
       </div>
     </header>
