@@ -109,6 +109,24 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 **Commits asociados:** se enlazarán en el PR que cierra #6.
 
+### 2026-06-11 — Transcripción con whisper-rs (ADR-004)
+
+**Herramienta:** Claude Fable 5 (Claude Code)
+
+**Contexto:** Con el audio extraído (PR #7), siguiente paso del pipeline: transcribir `media/audio.wav` a segmentos con timing y texto (issue #8).
+
+**Aporte de la IA:** Borrador del ADR-004 (modelo provisto por el usuario vs. empaquetado vs. descarga automática). Módulo `transcribe.rs` con `whisper-rs` 0.16 (carga del WAV vía `hound` con validación de formato, conversión a f32, mapeo de segmentos), función `transcribe` en `project.rs` que reemplaza `segments.json`, comando Tauri asíncrono `transcribir`, botón «Transcribir» con confirmación de reemplazo y recordatorio de la ruta del modelo en `localStorage`, cinco tests nuevos, `cmake`/`libclang-dev` en CI y documentación de requisitos en README.
+
+**Decisiones humanas:**
+
+- Continuar con la transcripción como siguiente feature, usando `whisper-rs` como prevé ADR-001.
+- El modelo GGML lo provee el usuario; la descarga automática queda como mejora futura (documentado en ADR-004).
+- El registro de runs en `runs/` se pospone hasta que haya más de una etapa generativa.
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
+
+**Commits asociados:** se enlazarán en el PR que cierra #8.
+
 ---
 
 ## Plantilla en blanco para nuevas entradas

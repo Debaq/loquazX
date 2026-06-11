@@ -250,6 +250,38 @@ pub fn extract_audio(path: &Path) -> Result<Project, String> {
     })
 }
 
+pub fn transcribe(path: &Path, model: &Path) -> Result<Project, String> {
+    let manifest: Manifest = read_json(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    let audio = resolved_audio_path(path, &manifest).ok_or_else(|| {
+        "El proyecto no tiene audio extraído. Extrae el audio primero.".to_string()
+    })?;
+    let audio = Path::new(&audio);
+    if !audio.is_file() {
+        return Err(format!(
+            "El audio extraído no existe: {}. Vuelve a extraerlo.",
+            audio.display()
+        ));
+    }
+
+    let segments: Vec<Segment> =
+        crate::transcribe::transcribe(audio, model, &manifest.source_language)?
+            .into_iter()
+            .map(|s| Segment {
+                id: uuid::Uuid::new_v4().to_string(),
+                start: s.start,
+                end: s.end,
+                source: s.text,
+                translation: String::new(),
+            })
+            .collect();
+
+    // ADR-004: la transcripción reemplaza los segmentos; la UI confirma antes.
+    write_json(&path.join("segments.json"), &SegmentsFile { segments })?;
+
+    open(path)
+}
+
 pub fn save_segments(path: &Path, segments: Vec<Segment>) -> Result<(), String> {
     if !path.join("project.json").is_file() {
         return Err(format!(
@@ -486,6 +518,21 @@ mod tests {
         assert!(proyecto.manifest.audio.is_none());
         assert!(proyecto.audio_path.is_none());
         assert!(!ruta.join("media/audio.wav").exists());
+    }
+
+    #[test]
+    fn transcribir_falla_sin_audio_extraido() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.lqzx");
+        create(&ruta, "Demo", "es", "en").unwrap();
+        let error = transcribe(&ruta, &dir.path().join("modelo.bin")).unwrap_err();
+        assert!(error.contains("audio"));
+    }
+
+    #[test]
+    fn transcribir_falla_fuera_de_un_proyecto() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(transcribe(dir.path(), &dir.path().join("modelo.bin")).is_err());
     }
 
     #[test]

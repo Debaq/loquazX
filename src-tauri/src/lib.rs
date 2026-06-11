@@ -1,5 +1,6 @@
 mod audio;
 mod project;
+mod transcribe;
 
 use project::{Project, Segment};
 use std::path::PathBuf;
@@ -42,6 +43,16 @@ async fn extraer_audio(path: String) -> Result<Project, String> {
         .map_err(|e| format!("La extracción de audio se interrumpió: {e}"))?
 }
 
+// Asíncrono: whisper puede tardar minutos y no debe congelar el hilo principal.
+#[tauri::command]
+async fn transcribir(path: String, modelo: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::transcribe(&PathBuf::from(path), &PathBuf::from(modelo))
+    })
+    .await
+    .map_err(|e| format!("La transcripción se interrumpió: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -52,7 +63,8 @@ pub fn run() {
             abrir_proyecto,
             guardar_segmentos,
             importar_video,
-            extraer_audio
+            extraer_audio,
+            transcribir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
