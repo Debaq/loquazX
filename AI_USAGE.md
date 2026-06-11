@@ -14,6 +14,7 @@ Este archivo documenta el uso de herramientas de IA generativa en el desarrollo 
 | Herramienta            | Versión                | Usos principales                                          |
 |------------------------|------------------------|-----------------------------------------------------------|
 | Claude Opus 4.7 (1M)   | 2026-01                | Bootstrap del repositorio, scaffolding inicial, ADRs      |
+| Claude Fable 5         | 2026-06                | Implementación del formato de proyecto (ADR-002)          |
 
 Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
@@ -56,6 +57,23 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 **Revisión humana:** Verificación visual de la ventana Tauri tras los cambios y aprobación de los dos commits.
 
 **Commits asociados:** `e60224b` (ADR-002), `91fb701` (interfaz base).
+
+### 2026-06-11 — Implementación del formato de proyecto (ADR-002)
+
+**Herramienta:** Claude Fable 5 (Claude Code)
+
+**Contexto:** Primera funcionalidad con backend real: persistencia de proyectos según la estructura de carpeta `.lqzx` propuesta en ADR-002 (issue #2).
+
+**Aporte de la IA:** Módulo `project.rs` con creación, apertura y guardado de segmentos (escritura atómica vía temporal + rename, validación de `format_version`), comandos Tauri `crear_proyecto`/`abrir_proyecto`/`guardar_segmentos`, seis tests unitarios, conexión de los botones Nuevo/Abrir/Guardar con los diálogos nativos del plugin `dialog`, y actualización de CHANGELOG.
+
+**Decisiones humanas:**
+
+- ADR-002 se mantiene en estado *Propuesta*: los puntos abiertos (copia vs. referencia del video, purga de runs) siguen sin resolverse y la aceptación formal queda pendiente.
+- Idiomas por defecto `es` → `en` hasta que exista selector en la UI.
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
+
+**Commits asociados:** se enlazarán en el PR que cierra #2.
 
 ---
 
