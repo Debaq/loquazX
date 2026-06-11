@@ -31,8 +31,16 @@ Decisiones detalladas en [`docs/decisiones/`](docs/decisiones/).
 
 Pendiente. Requiere compilación desde el código fuente hasta la primera release con binarios.
 
-Requisito en tiempo de ejecución: `ffmpeg` instalado y disponible en el `PATH`
-(ADR-003). En Linux está en los repositorios oficiales de todas las distribuciones.
+Requisitos en tiempo de ejecución:
+
+- `ffmpeg` instalado y disponible en el `PATH` (ADR-003). En Linux está en los
+  repositorios oficiales de todas las distribuciones.
+- Un modelo GGML de whisper para transcribir (ADR-004), descargable desde
+  <https://huggingface.co/ggerganov/whisper.cpp>. La aplicación pide el archivo
+  la primera vez que se transcribe; `ggml-base.bin` es un buen punto de partida.
+
+Requisitos de compilación: `cmake` y un compilador C/C++ con `libclang`
+(necesarios para compilar `whisper-rs`).
 
 ```bash
 git clone https://github.com/Debaq/loquazX.git
