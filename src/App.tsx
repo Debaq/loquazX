@@ -1,24 +1,71 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { open, save, message } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 import TopBar from "./components/TopBar";
 import SegmentsList from "./components/SegmentsList";
 import VideoPreview from "./components/VideoPreview";
 import EditPanel from "./components/EditPanel";
 import Transport from "./components/Transport";
-import type { Segment } from "./types";
-
-const segmentosDemo: Segment[] = [
-  { id: "s1", start: 0, end: 3.2, source: "Hola, bienvenidos al video.", translation: "" },
-  { id: "s2", start: 3.2, end: 7.8, source: "Hoy hablaremos de loquazX.", translation: "" },
-  { id: "s3", start: 7.8, end: 12.0, source: "Una herramienta de subtitulado.", translation: "" },
-];
+import type { Project, Segment } from "./types";
 
 function App() {
-  const [segments, setSegments] = useState<Segment[]>(segmentosDemo);
-  const [selectedId, setSelectedId] = useState<string | null>(segmentosDemo[0]?.id ?? null);
-  const [projectName] = useState<string>("Proyecto sin título");
+  const [project, setProject] = useState<Project | null>(null);
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const selected = segments.find((s) => s.id === selectedId) ?? null;
+
+  function cargarProyecto(proyecto: Project) {
+    setProject(proyecto);
+    setSegments(proyecto.segments);
+    setSelectedId(proyecto.segments[0]?.id ?? null);
+  }
+
+  async function nuevoProyecto() {
+    const ruta = await save({
+      title: "Nuevo proyecto",
+      defaultPath: "proyecto.lqzx",
+    });
+    if (!ruta) return;
+    const nombre =
+      ruta.split(/[\\/]/).pop()?.replace(/\.lqzx$/, "") ?? "Proyecto";
+    try {
+      const proyecto = await invoke<Project>("crear_proyecto", {
+        path: ruta,
+        nombre,
+        // Idiomas por defecto hasta que exista selector en la UI.
+        idiomaOrigen: "es",
+        idiomaDestino: "en",
+      });
+      cargarProyecto(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Nuevo proyecto", kind: "error" });
+    }
+  }
+
+  async function abrirProyecto() {
+    const ruta = await open({ title: "Abrir proyecto", directory: true });
+    if (!ruta) return;
+    try {
+      const proyecto = await invoke<Project>("abrir_proyecto", { path: ruta });
+      cargarProyecto(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Abrir proyecto", kind: "error" });
+    }
+  }
+
+  async function guardarProyecto() {
+    if (!project) return;
+    try {
+      await invoke("guardar_segmentos", {
+        path: project.path,
+        segmentos: segments,
+      });
+    } catch (e) {
+      await message(String(e), { title: "Guardar", kind: "error" });
+    }
+  }
 
   function actualizarSegmento(id: string, cambios: Partial<Segment>) {
     setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, ...cambios } : s)));
@@ -26,7 +73,13 @@ function App() {
 
   return (
     <div className="app">
-      <TopBar projectName={projectName} />
+      <TopBar
+        projectName={project?.manifest.name ?? "Sin proyecto"}
+        canSave={project !== null}
+        onNew={nuevoProyecto}
+        onOpen={abrirProyecto}
+        onSave={guardarProyecto}
+      />
       <div className="app__body">
         <aside className="app__left">
           <SegmentsList
