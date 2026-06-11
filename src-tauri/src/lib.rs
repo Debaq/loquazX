@@ -1,3 +1,4 @@
+mod audio;
 mod project;
 
 use project::{Project, Segment};
@@ -33,6 +34,14 @@ fn importar_video(path: String, video: String, copiar: bool) -> Result<Project, 
     project::import_video(&PathBuf::from(path), &PathBuf::from(video), copiar)
 }
 
+// Asíncrono: ffmpeg puede tardar y no debe congelar el hilo principal.
+#[tauri::command]
+async fn extraer_audio(path: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || project::extract_audio(&PathBuf::from(path)))
+        .await
+        .map_err(|e| format!("La extracción de audio se interrumpió: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -42,7 +51,8 @@ pub fn run() {
             crear_proyecto,
             abrir_proyecto,
             guardar_segmentos,
-            importar_video
+            importar_video,
+            extraer_audio
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

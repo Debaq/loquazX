@@ -23,6 +23,17 @@ pub struct Manifest {
     /// Ausente hasta que se importe un video; opcional para no romper proyectos previos.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceVideo>,
+    /// Ausente hasta que se extraiga el audio del video (ADR-003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<ExtractedAudio>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedAudio {
+    /// Relativa al proyecto, p. ej. `media/audio.wav`.
+    pub file: String,
+    /// Segundos desde época Unix al momento de extraer.
+    pub extracted_at: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +72,8 @@ pub struct Project {
     pub segments: Vec<Segment>,
     /// Ruta absoluta del video listo para reproducir, si hay uno importado.
     pub video_path: Option<String>,
+    /// Ruta absoluta del WAV extraído para whisper, si existe.
+    pub audio_path: Option<String>,
 }
 
 fn resolved_video_path(dir: &Path, manifest: &Manifest) -> Option<String> {
@@ -72,6 +85,18 @@ fn resolved_video_path(dir: &Path, manifest: &Manifest) -> Option<String> {
         dir.join(file)
     };
     Some(absolute.display().to_string())
+}
+
+fn resolved_audio_path(dir: &Path, manifest: &Manifest) -> Option<String> {
+    let audio = manifest.audio.as_ref()?;
+    Some(dir.join(&audio.file).display().to_string())
+}
+
+fn unix_now() -> Result<u64, String> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("Reloj del sistema inválido: {e}"))?
+        .as_secs())
 }
 
 pub fn create(
@@ -90,10 +115,7 @@ pub fn create(
             .map_err(|e| format!("No se pudo crear el subdirectorio {sub}: {e}"))?;
     }
 
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("Reloj del sistema inválido: {e}"))?
-        .as_secs();
+    let created_at = unix_now()?;
     let manifest = Manifest {
         id: uuid::Uuid::new_v4().to_string(),
         format_version: FORMAT_VERSION,
@@ -102,6 +124,7 @@ pub fn create(
         target_language: target_language.to_string(),
         created_at,
         source: None,
+        audio: None,
     };
     write_json(&path.join("project.json"), &manifest)?;
     write_json(&path.join("segments.json"), &SegmentsFile::default())?;
@@ -111,6 +134,7 @@ pub fn create(
         manifest,
         segments: Vec::new(),
         video_path: None,
+        audio_path: None,
     })
 }
 
@@ -131,6 +155,7 @@ pub fn open(path: &Path) -> Result<Project, String> {
     Ok(Project {
         path: path.display().to_string(),
         video_path: resolved_video_path(path, &manifest),
+        audio_path: resolved_audio_path(path, &manifest),
         manifest,
         segments,
     })
@@ -167,6 +192,10 @@ pub fn import_video(path: &Path, video: &Path, copy: bool) -> Result<Project, St
         },
         original_path: video.display().to_string(),
     });
+    // El audio extraído pertenece al video anterior: queda obsoleto al reimportar.
+    if let Some(audio) = manifest.audio.take() {
+        let _ = fs::remove_file(path.join(&audio.file));
+    }
     write_json(&path.join("project.json"), &manifest)?;
 
     let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
@@ -175,6 +204,47 @@ pub fn import_video(path: &Path, video: &Path, copy: bool) -> Result<Project, St
     Ok(Project {
         path: path.display().to_string(),
         video_path: resolved_video_path(path, &manifest),
+        audio_path: None,
+        manifest,
+        segments,
+    })
+}
+
+pub fn extract_audio(path: &Path) -> Result<Project, String> {
+    let mut manifest: Manifest = read_json(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    let video = resolved_video_path(path, &manifest)
+        .ok_or_else(|| "El proyecto no tiene un video importado.".to_string())?;
+    let video = Path::new(&video);
+    if !video.is_file() {
+        return Err(format!(
+            "El video del proyecto no existe: {}",
+            video.display()
+        ));
+    }
+
+    let relative = "media/audio.wav";
+    let output = path.join(relative);
+    // `media/` existe desde create(), pero proyectos manipulados a mano pueden no tenerla.
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("No se pudo crear el directorio media: {e}"))?;
+    }
+    crate::audio::extract_wav_16k(video, &output)?;
+
+    manifest.audio = Some(ExtractedAudio {
+        file: relative.to_string(),
+        extracted_at: unix_now()?,
+    });
+    write_json(&path.join("project.json"), &manifest)?;
+
+    let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
+        .unwrap_or_default()
+        .segments;
+    Ok(Project {
+        path: path.display().to_string(),
+        video_path: resolved_video_path(path, &manifest),
+        audio_path: resolved_audio_path(path, &manifest),
         manifest,
         segments,
     })
@@ -340,6 +410,82 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let video = video_falso(dir.path());
         assert!(import_video(dir.path(), &video, true).is_err());
+    }
+
+    /// Genera un mp4 real (tono de 440 Hz, 1 s) con el ffmpeg del sistema,
+    /// requisito asumido por ADR-003 tanto en desarrollo como en CI.
+    fn video_real(dir: &Path) -> std::path::PathBuf {
+        let video = dir.join("clip.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1"])
+            .args(["-c:a", "aac"])
+            .arg(&video)
+            .status()
+            .expect("ffmpeg debe estar instalado para correr estos tests (ADR-003)");
+        assert!(status.success(), "ffmpeg no pudo generar el clip de prueba");
+        video
+    }
+
+    #[test]
+    fn extraer_audio_genera_wav_16k_mono() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.lqzx");
+        create(&ruta, "Demo", "es", "en").unwrap();
+        import_video(&ruta, &video_real(dir.path()), true).unwrap();
+
+        let proyecto = extract_audio(&ruta).unwrap();
+
+        let audio = proyecto.manifest.audio.as_ref().unwrap();
+        assert_eq!(audio.file, "media/audio.wav");
+        let wav = ruta.join("media/audio.wav");
+        assert!(wav.is_file());
+        assert_eq!(
+            proyecto.audio_path.as_deref(),
+            Some(wav.display().to_string().as_str())
+        );
+
+        // Cabecera WAV: mono en el byte 22, frecuencia de muestreo en el 24.
+        let bytes = fs::read(&wav).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(u16::from_le_bytes([bytes[22], bytes[23]]), 1);
+        assert_eq!(
+            u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
+            16000
+        );
+
+        // El audio extraído sobrevive a cerrar y reabrir el proyecto.
+        let reabierto = open(&ruta).unwrap();
+        assert_eq!(reabierto.audio_path, proyecto.audio_path);
+    }
+
+    #[test]
+    fn extraer_audio_falla_sin_video_importado() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.lqzx");
+        create(&ruta, "Demo", "es", "en").unwrap();
+        assert!(extract_audio(&ruta).is_err());
+    }
+
+    #[test]
+    fn extraer_audio_falla_fuera_de_un_proyecto() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(extract_audio(dir.path()).is_err());
+    }
+
+    #[test]
+    fn reimportar_video_invalida_el_audio_extraido() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.lqzx");
+        create(&ruta, "Demo", "es", "en").unwrap();
+        import_video(&ruta, &video_real(dir.path()), true).unwrap();
+        extract_audio(&ruta).unwrap();
+
+        let proyecto = import_video(&ruta, &video_falso(dir.path()), true).unwrap();
+
+        assert!(proyecto.manifest.audio.is_none());
+        assert!(proyecto.audio_path.is_none());
+        assert!(!ruta.join("media/audio.wav").exists());
     }
 
     #[test]
