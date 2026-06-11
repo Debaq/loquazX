@@ -92,6 +92,23 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 **Commits asociados:** se enlazarán en el PR que cierra #4.
 
+### 2026-06-11 — Extracción de audio para whisper (ADR-003)
+
+**Herramienta:** Claude Fable 5 (Claude Code)
+
+**Contexto:** Con el video importado (PR #5), siguiente paso del pipeline: obtener el audio en WAV 16 kHz mono, el formato que whisper.cpp exige (issue #6).
+
+**Aporte de la IA:** Borrador del ADR-003 (ffmpeg del sistema vs. sidecar vs. decodificación en Rust). Módulo `audio.rs` que invoca ffmpeg, función `extract_audio` en `project.rs` con campo opcional `audio` en el manifiesto, comando Tauri asíncrono `extraer_audio`, invalidación del audio al reimportar video, botón «Extraer audio» en la barra superior y cuatro tests nuevos (incluida verificación de la cabecera WAV). ffmpeg agregado a las dependencias de CI.
+
+**Decisiones humanas:**
+
+- Continuar con la extracción de audio como siguiente feature.
+- Usar el ffmpeg del sistema por ahora; el empaquetado como sidecar se reevaluará al apuntar a Windows/macOS (documentado en ADR-003).
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
+
+**Commits asociados:** se enlazarán en el PR que cierra #6.
+
 ---
 
 ## Plantilla en blanco para nuevas entradas
