@@ -28,6 +28,11 @@ fn guardar_segmentos(path: String, segmentos: Vec<Segment>) -> Result<(), String
     project::save_segments(&PathBuf::from(path), segmentos)
 }
 
+#[tauri::command]
+fn importar_video(path: String, video: String, copiar: bool) -> Result<Project, String> {
+    project::import_video(&PathBuf::from(path), &PathBuf::from(video), copiar)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -36,7 +41,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             crear_proyecto,
             abrir_proyecto,
-            guardar_segmentos
+            guardar_segmentos,
+            importar_video
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
