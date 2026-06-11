@@ -169,6 +169,12 @@ textarea:focus, input:focus, select:focus {
 .preview__sub {
   font-size: 0.85rem;
 }
+.preview__video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
 
 .edit {
   padding: 1rem;

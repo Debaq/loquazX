@@ -6,6 +6,12 @@ export interface Segment {
   translation: string;
 }
 
+export interface SourceVideo {
+  file: string;
+  mode: "copy" | "reference";
+  original_path: string;
+}
+
 export interface ProjectManifest {
   id: string;
   format_version: number;
@@ -13,10 +19,12 @@ export interface ProjectManifest {
   source_language: string;
   target_language: string;
   created_at: number;
+  source?: SourceVideo;
 }
 
 export interface Project {
   path: string;
   manifest: ProjectManifest;
   segments: Segment[];
+  video_path: string | null;
 }
