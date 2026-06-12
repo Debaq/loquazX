@@ -13,7 +13,12 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 - Botones Nuevo, Abrir y Guardar de la barra superior conectados a diálogos nativos.
 - Importación de video al proyecto (copia a `source/` o referencia a la ruta original, a elección del usuario) y reproducción en el panel de previsualización.
 - Extracción de audio del video a `media/audio.wav` (WAV 16 kHz mono, el formato de entrada de whisper.cpp) usando el ffmpeg del sistema según ADR-003, con botón «Extraer audio» en la barra superior. Al reimportar un video, el audio extraído previo se invalida.
-- Transcripción del audio a segmentos con `whisper-rs` según ADR-004: el usuario selecciona el modelo GGML (la última ruta se recuerda), el idioma sale del manifiesto y el resultado reemplaza `segments.json` previa confirmación. Botón «Transcribir» en la barra superior.
+- Transcripción del audio a segmentos con `whisper-rs` según ADR-004: el idioma sale del manifiesto y el resultado reemplaza `segments.json` previa confirmación. Botón «Transcribir» en la barra superior.
+- Gestión del modelo whisper por descarga según ADR-007: nuevo gestor «Modelo» que descarga el nivel elegido (`tiny`, `base`, `small`, `medium`, `large-v3`; por defecto `base`) desde Hugging Face con barra de progreso y lo guarda de forma persistente en el directorio de datos de la app para reutilizarlo siempre. Permite importar un `.bin` propio (offline) y borrar modelos. La transcripción usa el modelo guardado del nivel elegido sin pedir un archivo. Módulo `models.rs` y comandos Tauri `listar_modelos`/`descargar_modelo`/`importar_modelo`/`eliminar_modelo`.
+
+### Changed
+
+- La transcripción ya no abre un diálogo para seleccionar el archivo del modelo en cada uso: toma el modelo descargado del nivel configurado (ADR-007, reemplaza la gestión de modelo de ADR-004). La clave `localStorage` pasó de `loquazx.whisperModel` (ruta) a `loquazx.whisperLevel` (nivel).
 
 ### Fixed
 
