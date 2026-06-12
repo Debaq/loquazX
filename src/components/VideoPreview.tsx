@@ -4,10 +4,10 @@ import { invoke } from "@tauri-apps/api/core";
 interface Props {
   videoPath: string | null;
   hasProject: boolean;
-  onImport: () => void;
+  videoRef: (el: HTMLVideoElement | null) => void;
 }
 
-function VideoPreview({ videoPath, hasProject, onImport }: Props) {
+function VideoPreview({ videoPath, hasProject, videoRef }: Props) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,9 +28,9 @@ function VideoPreview({ videoPath, hasProject, onImport }: Props) {
         {src && (
           <video
             key={src}
+            ref={videoRef}
             className="preview__video"
             src={src}
-            controls
             onError={(e) => {
               const code = e.currentTarget.error?.code;
               setError(`No se pudo reproducir el video (MediaError ${code ?? "?"}).`);
@@ -49,13 +49,11 @@ function VideoPreview({ videoPath, hasProject, onImport }: Props) {
         <div className="preview__hint">
           {hasProject ? "Sin video importado" : "Sin proyecto"}
         </div>
-        {hasProject ? (
-          <button type="button" onClick={onImport}>
-            Importar video…
-          </button>
-        ) : (
-          <div className="preview__sub">Crea o abre un proyecto para empezar</div>
-        )}
+        <div className="preview__sub">
+          {hasProject
+            ? "Usa «2. Importar video» en la barra superior"
+            : "Crea o abre un proyecto para empezar"}
+        </div>
       </div>
     </div>
   );

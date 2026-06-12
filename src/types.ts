@@ -34,6 +34,26 @@ export interface Project {
   segments: Segment[];
   video_path: string | null;
   audio_path: string | null;
+  /** Ids de segmentos que ya tienen audio de doblaje generado (ADR-009). */
+  dubs: string[];
+}
+
+/** Motor de síntesis de voz para el doblaje (ADR-009). */
+export type DubEngine = "piper" | "edge-tts";
+
+export interface DubSettings {
+  engine: DubEngine;
+  voice: string;
+}
+
+export interface DubReport {
+  generated: number;
+  skipped: number;
+}
+
+export interface DubResult {
+  project: Project;
+  report: DubReport;
 }
 
 export interface ModelInfo {
@@ -44,10 +64,32 @@ export interface ModelInfo {
   path: string | null;
 }
 
+export interface VoiceInfo {
+  id: string;
+  label: string;
+  language: string;
+  approx_size_mb: number;
+  downloaded: boolean;
+  path: string | null;
+}
+
 export interface DownloadProgress {
   nivel: string;
   descargado: number;
   total: number;
+}
+
+export interface EdgeVoice {
+  short_name: string;
+  locale: string;
+  language: string;
+  gender: string;
+  friendly_name: string;
+}
+
+export interface Waveform {
+  peaks: number[];
+  duration: number;
 }
 
 export interface ExportResult {

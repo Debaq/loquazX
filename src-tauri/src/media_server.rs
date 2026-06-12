@@ -182,6 +182,7 @@ fn content_type(path: &Path) -> &'static str {
         Some("mov") => "video/quicktime",
         Some("avi") => "video/x-msvideo",
         Some("wav") => "audio/wav",
+        Some("mp3") => "audio/mpeg",
         _ => "application/octet-stream",
     }
 }

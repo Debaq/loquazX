@@ -1,85 +1,251 @@
+import {
+  FilePlus,
+  FolderOpen,
+  Save,
+  Film,
+  AudioLines,
+  Captions,
+  FileUp,
+  FileDown,
+  Languages,
+  Cpu,
+  Loader,
+} from "lucide-react";
+import { LANGUAGES } from "../languages";
+
 interface Props {
   projectName: string;
   canSave: boolean;
+  canImportVideo: boolean;
   canExtractAudio: boolean;
   extractingAudio: boolean;
   hasAudio: boolean;
   transcribing: boolean;
   hasSegments: boolean;
+  translating: boolean;
+  translateProgress: { done: number; total: number } | null;
   modelLevel: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  onChangeLanguages: (origen: string, destino: string) => void;
   onNew: () => void;
   onOpen: () => void;
   onSave: () => void;
+  onImportVideo: () => void;
   onExtractAudio: () => void;
   onTranscribe: () => void;
   onExportTranslation: () => void;
   onImportTranslation: () => void;
+  onTranslateLocal: () => void;
   onOpenModels: () => void;
 }
+
+const ICON_SIZE = 18;
 
 function TopBar({
   projectName,
   canSave,
+  canImportVideo,
   canExtractAudio,
   extractingAudio,
   hasAudio,
   transcribing,
   hasSegments,
+  translating,
+  translateProgress,
   modelLevel,
+  sourceLanguage,
+  targetLanguage,
+  onChangeLanguages,
   onNew,
   onOpen,
   onSave,
+  onImportVideo,
   onExtractAudio,
   onTranscribe,
   onExportTranslation,
   onImportTranslation,
+  onTranslateLocal,
   onOpenModels,
 }: Props) {
   return (
     <header className="topbar">
       <div className="topbar__title">loquazX — {projectName}</div>
       <div className="topbar__actions">
-        <button type="button" onClick={onNew}>Nuevo</button>
-        <button type="button" onClick={onOpen}>Abrir</button>
-        <button type="button" onClick={onSave} disabled={!canSave}>Guardar</button>
         <button
           type="button"
+          className="topbar__btn topbar__btn--step"
+          data-step="1"
+          onClick={onNew}
+          title="1. Nuevo proyecto"
+          aria-label="Paso 1: Nuevo proyecto"
+        >
+          <FilePlus size={ICON_SIZE} />
+        </button>
+        <button
+          type="button"
+          className="topbar__btn topbar__btn--step"
+          data-step="1"
+          onClick={onOpen}
+          title="1. Abrir proyecto"
+          aria-label="Paso 1: Abrir proyecto"
+        >
+          <FolderOpen size={ICON_SIZE} />
+        </button>
+        <button
+          type="button"
+          className="topbar__btn"
+          onClick={onSave}
+          disabled={!canSave}
+          title="Guardar proyecto"
+          aria-label="Guardar proyecto"
+        >
+          <Save size={ICON_SIZE} />
+        </button>
+        <button
+          type="button"
+          className="topbar__btn topbar__btn--step"
+          data-step="2"
+          onClick={onImportVideo}
+          disabled={!canImportVideo}
+          title="2. Importar video"
+          aria-label="Paso 2: Importar video"
+        >
+          <Film size={ICON_SIZE} />
+        </button>
+        <button
+          type="button"
+          className="topbar__btn topbar__btn--step"
+          data-step="3"
           onClick={onExtractAudio}
           disabled={!canExtractAudio || extractingAudio}
+          title={
+            extractingAudio
+              ? "3. Extrayendo audio…"
+              : hasAudio
+                ? "3. Reextraer audio"
+                : "3. Extraer audio"
+          }
+          aria-label="Paso 3: Extraer audio"
         >
-          {extractingAudio
-            ? "Extrayendo audio…"
-            : hasAudio
-              ? "Reextraer audio"
-              : "Extraer audio"}
+          {extractingAudio ? (
+            <Loader size={ICON_SIZE} className="topbar__spin" />
+          ) : (
+            <AudioLines size={ICON_SIZE} />
+          )}
         </button>
+        <label
+          className="topbar__lang topbar__lang--step"
+          data-step="4"
+          title="Paso 4: Idioma de origen"
+        >
+          Origen
+          <select
+            value={sourceLanguage}
+            onChange={(e) => onChangeLanguages(e.target.value, targetLanguage)}
+            disabled={transcribing}
+            title="4. Idioma hablado en el audio (lo usa whisper al transcribir)"
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
+          className="topbar__btn topbar__btn--step"
+          data-step="5"
           onClick={onTranscribe}
           disabled={!hasAudio || transcribing || extractingAudio}
+          title={
+            transcribing
+              ? "5. Transcribiendo…"
+              : hasSegments
+                ? "5. Retranscribir"
+                : "5. Transcribir"
+          }
+          aria-label="Paso 5: Transcribir"
         >
-          {transcribing
-            ? "Transcribiendo…"
-            : hasSegments
-              ? "Retranscribir"
-              : "Transcribir"}
+          {transcribing ? (
+            <Loader size={ICON_SIZE} className="topbar__spin" />
+          ) : (
+            <Captions size={ICON_SIZE} />
+          )}
         </button>
+        <label
+          className="topbar__lang topbar__lang--step"
+          data-step="6"
+          title="Paso 6: Idioma de destino (al que se traduce)"
+        >
+          Destino
+          <select
+            value={targetLanguage}
+            onChange={(e) => onChangeLanguages(sourceLanguage, e.target.value)}
+            disabled={transcribing || translating}
+            title="6. Idioma al que se traduce (lo usan «Exportar para traducir» y «Traducir con IA local»)"
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
+          className="topbar__btn topbar__btn--step"
+          data-step="6"
           onClick={onExportTranslation}
           disabled={!hasSegments || transcribing}
+          title="6. Exportar para traducir"
+          aria-label="Paso 6: Exportar para traducir"
         >
-          Exportar para traducir
+          <FileUp size={ICON_SIZE} />
         </button>
         <button
           type="button"
+          className="topbar__btn topbar__btn--step"
+          data-step="6"
           onClick={onImportTranslation}
           disabled={!hasSegments || transcribing}
+          title="6. Importar traducción"
+          aria-label="Paso 6: Importar traducción"
         >
-          Importar traducción
+          <FileDown size={ICON_SIZE} />
         </button>
-        <button type="button" onClick={onOpenModels} disabled={transcribing}>
-          Modelo: {modelLevel}
+        <button
+          type="button"
+          className="topbar__btn topbar__btn--step"
+          data-step="6"
+          onClick={onTranslateLocal}
+          disabled={!hasSegments || transcribing || translating}
+          title={
+            translating
+              ? translateProgress
+                ? `6. Traduciendo… (${translateProgress.done}/${translateProgress.total})`
+                : "6. Traduciendo…"
+              : "6. Traducir con IA local (sin red)"
+          }
+          aria-label="Paso 6: Traducir con IA local"
+        >
+          {translating ? (
+            <Loader size={ICON_SIZE} className="topbar__spin" />
+          ) : (
+            <Languages size={ICON_SIZE} />
+          )}
+        </button>
+        <button
+          type="button"
+          className="topbar__btn topbar__btn--label"
+          onClick={onOpenModels}
+          disabled={transcribing}
+          title={`Modelo: ${modelLevel}`}
+          aria-label={`Modelo: ${modelLevel}`}
+        >
+          <Cpu size={ICON_SIZE} />
+          <span>{modelLevel}</span>
         </button>
       </div>
     </header>
