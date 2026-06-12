@@ -1,4 +1,5 @@
 mod audio;
+mod media_server;
 mod project;
 mod transcribe;
 
@@ -43,6 +44,16 @@ async fn extraer_audio(path: String) -> Result<Project, String> {
         .map_err(|e| format!("La extracción de audio se interrumpió: {e}"))?
 }
 
+// ADR-005: el media se sirve por HTTP local; WebKitGTK no enruta los elementos
+// de media por el protocolo asset.
+#[tauri::command]
+fn url_media(
+    server: tauri::State<media_server::MediaServer>,
+    path: String,
+) -> Result<String, String> {
+    server.url_for(std::path::Path::new(&path))
+}
+
 // Asíncrono: whisper puede tardar minutos y no debe congelar el hilo principal.
 #[tauri::command]
 async fn transcribir(path: String, modelo: String) -> Result<Project, String> {
@@ -55,7 +66,10 @@ async fn transcribir(path: String, modelo: String) -> Result<Project, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let media =
+        media_server::MediaServer::start().expect("no se pudo iniciar el servidor de media local");
     tauri::Builder::default()
+        .manage(media)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -64,7 +78,8 @@ pub fn run() {
             guardar_segmentos,
             importar_video,
             extraer_audio,
-            transcribir
+            transcribir,
+            url_media
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

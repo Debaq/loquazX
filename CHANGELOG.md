@@ -15,6 +15,10 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 - Extracción de audio del video a `media/audio.wav` (WAV 16 kHz mono, el formato de entrada de whisper.cpp) usando el ffmpeg del sistema según ADR-003, con botón «Extraer audio» en la barra superior. Al reimportar un video, el audio extraído previo se invalida.
 - Transcripción del audio a segmentos con `whisper-rs` según ADR-004: el usuario selecciona el modelo GGML (la última ruta se recuerda), el idioma sale del manifiesto y el resultado reemplaza `segments.json` previa confirmación. Botón «Transcribir» en la barra superior.
 
+### Fixed
+
+- El video importado no se reproducía en Linux: WebKitGTK entrega las URI de media a GStreamer sin pasar por el protocolo `asset` de Tauri. Ahora el media se sirve por un servidor HTTP local con soporte de rangos (ADR-005) y el panel muestra el error de reproducción si lo hay.
+
 ## [0.1.0] - 2026-05-05
 
 ### Added

@@ -1,4 +1,5 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
   videoPath: string | null;
@@ -7,14 +8,36 @@ interface Props {
 }
 
 function VideoPreview({ videoPath, hasProject, onImport }: Props) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // ADR-005: el video se sirve por HTTP local; WebKitGTK no reproduce
+  // media a través del protocolo asset.
+  useEffect(() => {
+    setSrc(null);
+    setError(null);
+    if (!videoPath) return;
+    invoke<string>("url_media", { path: videoPath })
+      .then(setSrc)
+      .catch((e) => setError(String(e)));
+  }, [videoPath]);
+
   if (videoPath) {
     return (
       <div className="preview">
-        <video
-          className="preview__video"
-          src={convertFileSrc(videoPath)}
-          controls
-        />
+        {src && (
+          <video
+            key={src}
+            className="preview__video"
+            src={src}
+            controls
+            onError={(e) => {
+              const code = e.currentTarget.error?.code;
+              setError(`No se pudo reproducir el video (MediaError ${code ?? "?"}).`);
+            }}
+          />
+        )}
+        {error && <div className="preview__hint">{error}</div>}
       </div>
     );
   }
