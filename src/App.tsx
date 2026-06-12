@@ -7,7 +7,10 @@ import SegmentsList from "./components/SegmentsList";
 import VideoPreview from "./components/VideoPreview";
 import EditPanel from "./components/EditPanel";
 import Transport from "./components/Transport";
-import type { Project, Segment } from "./types";
+import ModelManager from "./components/ModelManager";
+import type { Project, Segment, ModelInfo } from "./types";
+
+const NIVEL_POR_DEFECTO = "base";
 
 function App() {
   const [project, setProject] = useState<Project | null>(null);
@@ -15,6 +18,16 @@ function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [extractingAudio, setExtractingAudio] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [showModels, setShowModels] = useState(false);
+  // ADR-007: nivel de modelo elegido; persiste entre sesiones.
+  const [modelLevel, setModelLevel] = useState(
+    () => localStorage.getItem("loquazx.whisperLevel") ?? NIVEL_POR_DEFECTO,
+  );
+
+  function elegirNivel(nivel: string) {
+    setModelLevel(nivel);
+    localStorage.setItem("loquazx.whisperLevel", nivel);
+  }
 
   const selected = segments.find((s) => s.id === selectedId) ?? null;
 
@@ -115,19 +128,23 @@ function App() {
       );
       if (!continuar) return;
     }
-    // ADR-004: el usuario elige el modelo GGML; se recuerda la última ruta.
-    const modelo = await open({
-      title: "Seleccionar modelo whisper (GGML)",
-      defaultPath: localStorage.getItem("loquazx.whisperModel") ?? undefined,
-      filters: [{ name: "Modelo GGML", extensions: ["bin"] }],
-    });
-    if (!modelo) return;
-    localStorage.setItem("loquazx.whisperModel", modelo);
+    // ADR-007: el modelo se descarga y se guarda; si el nivel elegido no está
+    // disponible, abrimos el gestor en vez de fallar al transcribir.
+    const modelos = await invoke<ModelInfo[]>("listar_modelos");
+    const disponible = modelos.find((m) => m.id === modelLevel)?.downloaded ?? false;
+    if (!disponible) {
+      await message(
+        `El modelo «${modelLevel}» no está descargado. Descárgalo en «Modelo».`,
+        { title: "Transcribir", kind: "warning" },
+      );
+      setShowModels(true);
+      return;
+    }
     setTranscribing(true);
     try {
       const proyecto = await invoke<Project>("transcribir", {
         path: project.path,
-        modelo,
+        nivel: modelLevel,
       });
       cargarProyecto(proyecto);
     } catch (e) {
@@ -163,11 +180,13 @@ function App() {
         hasAudio={project?.audio_path != null}
         transcribing={transcribing}
         hasSegments={segments.length > 0}
+        modelLevel={modelLevel}
         onNew={nuevoProyecto}
         onOpen={abrirProyecto}
         onSave={guardarProyecto}
         onExtractAudio={extraerAudio}
         onTranscribe={transcribir}
+        onOpenModels={() => setShowModels(true)}
       />
       <div className="app__body">
         <aside className="app__left">
@@ -191,6 +210,13 @@ function App() {
       <footer className="app__footer">
         <Transport />
       </footer>
+      {showModels && (
+        <ModelManager
+          selectedLevel={modelLevel}
+          onSelectLevel={elegirNivel}
+          onClose={() => setShowModels(false)}
+        />
+      )}
     </div>
   );
 }

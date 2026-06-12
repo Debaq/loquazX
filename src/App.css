@@ -219,6 +219,108 @@ textarea:focus, input:focus, select:focus {
   font-style: italic;
 }
 
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+.modal__panel {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: min(560px, 92vw);
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 1rem 1.2rem 1.2rem;
+}
+.modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.modal__header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.modal__hint {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin: 0.4rem 0 1rem;
+}
+
+.modelos {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.modelos__item {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.modelos__item.is-active {
+  border-color: var(--accent);
+}
+.modelos__info {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.modelos__label {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.modelos__badge {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+}
+.modelos__size {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.modelos__progress {
+  position: relative;
+  height: 16px;
+  background: var(--bg);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.modelos__bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.modelos__pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+}
+.modelos__actions {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
 .transport {
   display: grid;
   grid-template-columns: auto auto 1fr;

@@ -6,11 +6,13 @@ interface Props {
   hasAudio: boolean;
   transcribing: boolean;
   hasSegments: boolean;
+  modelLevel: string;
   onNew: () => void;
   onOpen: () => void;
   onSave: () => void;
   onExtractAudio: () => void;
   onTranscribe: () => void;
+  onOpenModels: () => void;
 }
 
 function TopBar({
@@ -21,11 +23,13 @@ function TopBar({
   hasAudio,
   transcribing,
   hasSegments,
+  modelLevel,
   onNew,
   onOpen,
   onSave,
   onExtractAudio,
   onTranscribe,
+  onOpenModels,
 }: Props) {
   return (
     <header className="topbar">
@@ -55,6 +59,9 @@ function TopBar({
             : hasSegments
               ? "Retranscribir"
               : "Transcribir"}
+        </button>
+        <button type="button" onClick={onOpenModels} disabled={transcribing}>
+          Modelo: {modelLevel}
         </button>
       </div>
     </header>
