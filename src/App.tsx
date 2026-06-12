@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { ask, open, save, message } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 import TopBar from "./components/TopBar";
 import SegmentsList from "./components/SegmentsList";
 import VideoPreview from "./components/VideoPreview";
 import EditPanel from "./components/EditPanel";
-import Transport from "./components/Transport";
+import Timeline from "./components/Timeline";
 import ModelManager from "./components/ModelManager";
 import type {
   Project,
@@ -14,33 +15,232 @@ import type {
   ModelInfo,
   ExportResult,
   ImportResult,
+  VoiceInfo,
+  EdgeVoice,
+  DubEngine,
+  DubResult,
 } from "./types";
 
 const NIVEL_POR_DEFECTO = "base";
+const ORIGEN_POR_DEFECTO = "es";
+const DESTINO_POR_DEFECTO = "en";
 
 function App() {
   const [project, setProject] = useState<Project | null>(null);
+  // El <video> vive en VideoPreview; lo exponemos vía callback ref para que
+  // Transport pueda controlarlo. Usar estado (no useRef) hace que Transport
+  // re-suscriba sus listeners cuando el elemento se re-monta al cambiar de video.
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [extractingAudio, setExtractingAudio] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  // ADR-008: traducción con el motor local NLLB. `translateProgress` lleva el
+  // avance segmento a segmento que emite el backend por `traduccion:progreso`.
+  const [translating, setTranslating] = useState(false);
+  const [translateProgress, setTranslateProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   const [showModels, setShowModels] = useState(false);
   // ADR-007: nivel de modelo elegido; persiste entre sesiones.
   const [modelLevel, setModelLevel] = useState(
     () => localStorage.getItem("loquazx.whisperLevel") ?? NIVEL_POR_DEFECTO,
   );
+  // Idioma de origen (el que usa whisper al transcribir) y destino. Persisten
+  // como valores por defecto para el próximo proyecto; un proyecto abierto manda
+  // sobre ellos al cargarse.
+  const [sourceLanguage, setSourceLanguage] = useState(
+    () => localStorage.getItem("loquazx.sourceLanguage") ?? ORIGEN_POR_DEFECTO,
+  );
+  const [targetLanguage, setTargetLanguage] = useState(
+    () => localStorage.getItem("loquazx.targetLanguage") ?? DESTINO_POR_DEFECTO,
+  );
+  // ADR-009: doblaje. Voces Piper descargadas del idioma de salida y voces
+  // edge-tts (cargadas bajo demanda, con red). El motor y la voz se comparten
+  // entre la generación por segmento (EditPanel) y la masiva (Timeline).
+  const [piperVoices, setPiperVoices] = useState<VoiceInfo[]>([]);
+  const [edgeVoices, setEdgeVoices] = useState<EdgeVoice[]>([]);
+  const [loadingEdgeVoices, setLoadingEdgeVoices] = useState(false);
+  const [dubEngine, setDubEngine] = useState<DubEngine>(
+    () => (localStorage.getItem("loquazx.dubEngine") as DubEngine) ?? "piper",
+  );
+  const [dubVoice, setDubVoice] = useState("");
+  const [dubbing, setDubbing] = useState(false);
+  const [dubProgress, setDubProgress] = useState<{ done: number; total: number } | null>(null);
+  const [selectedDubUrl, setSelectedDubUrl] = useState<string | null>(null);
+  // Cambia con cada generación (masiva o por segmento) para que la Timeline
+  // recargue las ondas del doblaje, incluso al regenerar un segmento ya doblado.
+  const [dubVersion, setDubVersion] = useState(0);
+
+  // Desactiva el zoom del webview (Ctrl+rueda, pellizco, Ctrl +/-/0): la app
+  // no debe escalar como página web; el único zoom es el de la línea de tiempo.
+  useEffect(() => {
+    const sinZoomRueda = (e: WheelEvent) => {
+      if (e.ctrlKey) e.preventDefault();
+    };
+    const sinZoomTecla = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && ["+", "-", "=", "0"].includes(e.key)) {
+        e.preventDefault();
+      }
+    };
+    const sinGesto = (e: Event) => e.preventDefault();
+    window.addEventListener("wheel", sinZoomRueda, { passive: false, capture: true });
+    window.addEventListener("keydown", sinZoomTecla);
+    window.addEventListener("gesturestart", sinGesto);
+    window.addEventListener("gesturechange", sinGesto);
+    return () => {
+      window.removeEventListener("wheel", sinZoomRueda, { capture: true });
+      window.removeEventListener("keydown", sinZoomTecla);
+      window.removeEventListener("gesturestart", sinGesto);
+      window.removeEventListener("gesturechange", sinGesto);
+    };
+  }, []);
 
   function elegirNivel(nivel: string) {
     setModelLevel(nivel);
     localStorage.setItem("loquazx.whisperLevel", nivel);
   }
 
+  // Voces Piper descargadas para el idioma de salida: se refrescan al cambiar de
+  // idioma destino (y al volver del gestor de modelos, que puede haber bajado una).
+  useEffect(() => {
+    invoke<VoiceInfo[]>("listar_voces")
+      .then((vs) =>
+        setPiperVoices(vs.filter((v) => v.downloaded && v.language === targetLanguage)),
+      )
+      .catch(() => setPiperVoices([]));
+  }, [targetLanguage, showModels]);
+
+  // Al cambiar el motor o las voces disponibles, asegura que la voz elegida sea
+  // válida (o queda vacía si no hay voces para el idioma).
+  useEffect(() => {
+    const ids =
+      dubEngine === "piper"
+        ? piperVoices.map((v) => v.id)
+        : edgeVoices.map((v) => v.short_name);
+    setDubVoice((actual) => (ids.includes(actual) ? actual : ids[0] ?? ""));
+  }, [dubEngine, piperVoices, edgeVoices]);
+
+  // URL local del doblaje ya generado del segmento seleccionado, para oírlo sin
+  // regenerar (ruta determinista en `runs/dub/`).
+  useEffect(() => {
+    setSelectedDubUrl(null);
+    if (!project || !selectedId || !project.dubs.includes(selectedId)) return;
+    const wav = `${project.path}/runs/dub/${selectedId}.wav`;
+    invoke<string>("url_media", { path: wav })
+      .then(setSelectedDubUrl)
+      .catch(() => setSelectedDubUrl(null));
+  }, [project, selectedId]);
+
+  async function cargarVocesEdge() {
+    setLoadingEdgeVoices(true);
+    try {
+      const vs = await invoke<EdgeVoice[]>("listar_voces_edge");
+      setEdgeVoices(vs.filter((v) => v.language === targetLanguage));
+    } catch (e) {
+      await message(String(e), { title: "Voces edge-tts", kind: "error" });
+    } finally {
+      setLoadingEdgeVoices(false);
+    }
+  }
+
+  function elegirMotorDoblaje(motor: DubEngine) {
+    setDubEngine(motor);
+    localStorage.setItem("loquazx.dubEngine", motor);
+  }
+
+  // Genera el doblaje del segmento seleccionado y devuelve su URL para oírlo.
+  // Guarda primero los segmentos: la síntesis lee la traducción desde disco.
+  async function generarDoblajeSegmento(): Promise<string | null> {
+    if (!project || !selectedId || !dubVoice) return null;
+    try {
+      await guardarProyecto();
+      const url = await invoke<string>("generar_doblaje_segmento", {
+        path: project.path,
+        segmento: selectedId,
+        ajustes: { engine: dubEngine, voice: dubVoice },
+      });
+      setProject((p) =>
+        p
+          ? { ...p, dubs: p.dubs.includes(selectedId) ? p.dubs : [...p.dubs, selectedId] }
+          : p,
+      );
+      setDubVersion((v) => v + 1);
+      return url;
+    } catch (e) {
+      await message(String(e), { title: "Generar doblaje", kind: "error" });
+      return null;
+    }
+  }
+
+  // Dobla todos los segmentos traducidos del proyecto con el motor/voz elegidos.
+  async function generarDoblaje() {
+    if (!project || !dubVoice) return;
+    setDubbing(true);
+    setDubProgress({ done: 0, total: segments.length });
+    const desuscribir = await listen<{ generados: number; total: number }>(
+      "doblaje:progreso",
+      (e) => setDubProgress({ done: e.payload.generados, total: e.payload.total }),
+    );
+    try {
+      await guardarProyecto();
+      const resultado = await invoke<DubResult>("generar_doblaje", {
+        path: project.path,
+        ajustes: { engine: dubEngine, voice: dubVoice },
+      });
+      cargarProyecto(resultado.project);
+      setDubVersion((v) => v + 1);
+      await message(
+        `Doblados: ${resultado.report.generated}\nSin traducción: ${resultado.report.skipped}`,
+        { title: "Generar doblaje", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Generar doblaje", kind: "error" });
+    } finally {
+      desuscribir();
+      setDubbing(false);
+      setDubProgress(null);
+    }
+  }
+
   const selected = segments.find((s) => s.id === selectedId) ?? null;
+
+  // Seleccionar un segmento también mueve el cursor del video a su inicio,
+  // conectando la lista y la línea de tiempo con la reproducción.
+  function seleccionarSegmento(id: string) {
+    setSelectedId(id);
+    const segmento = segments.find((s) => s.id === id);
+    if (segmento && videoEl) videoEl.currentTime = segmento.start;
+  }
 
   function cargarProyecto(proyecto: Project) {
     setProject(proyecto);
     setSegments(proyecto.segments);
     setSelectedId(proyecto.segments[0]?.id ?? null);
+    // Los selectores reflejan los idiomas del proyecto abierto.
+    setSourceLanguage(proyecto.manifest.source_language);
+    setTargetLanguage(proyecto.manifest.target_language);
+  }
+
+  // Cambia los idiomas: si hay proyecto, persiste en su manifiesto (el de origen
+  // lo usa whisper al transcribir); además quedan como valores por defecto.
+  async function cambiarIdiomas(origen: string, destino: string) {
+    setSourceLanguage(origen);
+    setTargetLanguage(destino);
+    localStorage.setItem("loquazx.sourceLanguage", origen);
+    localStorage.setItem("loquazx.targetLanguage", destino);
+    if (!project) return;
+    try {
+      const proyecto = await invoke<Project>("cambiar_idiomas", {
+        path: project.path,
+        idiomaOrigen: origen,
+        idiomaDestino: destino,
+      });
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Cambiar idiomas", kind: "error" });
+    }
   }
 
   async function nuevoProyecto() {
@@ -55,9 +255,8 @@ function App() {
       const proyecto = await invoke<Project>("crear_proyecto", {
         path: ruta,
         nombre,
-        // Idiomas por defecto hasta que exista selector en la UI.
-        idiomaOrigen: "es",
-        idiomaDestino: "en",
+        idiomaOrigen: sourceLanguage,
+        idiomaDestino: targetLanguage,
       });
       cargarProyecto(proyecto);
     } catch (e) {
@@ -212,6 +411,56 @@ function App() {
     }
   }
 
+  async function traducirLocal() {
+    if (!project) return;
+    // ADR-008: traduce sin red con el modelo NLLB. Si no está descargado, abre el
+    // gestor en vez de fallar, igual que el flujo de transcripción con whisper.
+    const motores = await invoke<ModelInfo[]>("listar_motores_traduccion");
+    const listo = motores[0]?.downloaded ?? false;
+    if (!listo) {
+      await message(
+        "El modelo de traducción no está descargado. Descárgalo en «Modelos y voces».",
+        { title: "Traducir con IA local", kind: "warning" },
+      );
+      setShowModels(true);
+      return;
+    }
+    // El motor parte de segments.json en disco; persiste lo editado antes.
+    try {
+      await invoke("guardar_segmentos", {
+        path: project.path,
+        segmentos: segments,
+      });
+    } catch (e) {
+      await message(String(e), { title: "Traducir con IA local", kind: "error" });
+      return;
+    }
+    setTranslating(true);
+    setTranslateProgress({ done: 0, total: segments.length });
+    const desuscribir = await listen<{ traducidos: number; total: number }>(
+      "traduccion:progreso",
+      (e) =>
+        setTranslateProgress({ done: e.payload.traducidos, total: e.payload.total }),
+    );
+    try {
+      const resultado = await invoke<ImportResult>("traducir_local", {
+        path: project.path,
+      });
+      cargarProyecto(resultado.project);
+      const { translated, missing } = resultado.report;
+      await message(
+        `Traducidos: ${translated}\nSin traducción: ${missing}`,
+        { title: "Traducir con IA local", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Traducir con IA local", kind: "error" });
+    } finally {
+      desuscribir();
+      setTranslating(false);
+      setTranslateProgress(null);
+    }
+  }
+
   async function guardarProyecto() {
     if (!project) return;
     try {
@@ -233,19 +482,27 @@ function App() {
       <TopBar
         projectName={project?.manifest.name ?? "Sin proyecto"}
         canSave={project !== null}
+        canImportVideo={project !== null}
         canExtractAudio={project?.video_path != null}
         extractingAudio={extractingAudio}
         hasAudio={project?.audio_path != null}
         transcribing={transcribing}
         hasSegments={segments.length > 0}
+        translating={translating}
+        translateProgress={translateProgress}
         modelLevel={modelLevel}
+        sourceLanguage={sourceLanguage}
+        targetLanguage={targetLanguage}
+        onChangeLanguages={cambiarIdiomas}
         onNew={nuevoProyecto}
         onOpen={abrirProyecto}
         onSave={guardarProyecto}
+        onImportVideo={importarVideo}
         onExtractAudio={extraerAudio}
         onTranscribe={transcribir}
         onExportTranslation={exportarTraduccion}
         onImportTranslation={importarTraduccion}
+        onTranslateLocal={traducirLocal}
         onOpenModels={() => setShowModels(true)}
       />
       <div className="app__body">
@@ -253,22 +510,50 @@ function App() {
           <SegmentsList
             segments={segments}
             selectedId={selectedId}
-            onSelect={setSelectedId}
+            onSelect={seleccionarSegmento}
           />
         </aside>
         <main className="app__center">
           <VideoPreview
             videoPath={project?.video_path ?? null}
             hasProject={project !== null}
-            onImport={importarVideo}
+            videoRef={setVideoEl}
           />
         </main>
         <aside className="app__right">
-          <EditPanel segment={selected} onChange={actualizarSegmento} />
+          <EditPanel
+            segment={selected}
+            onChange={actualizarSegmento}
+            engine={dubEngine}
+            voice={dubVoice}
+            onChangeEngine={elegirMotorDoblaje}
+            onChangeVoice={setDubVoice}
+            piperVoices={piperVoices}
+            edgeVoices={edgeVoices}
+            loadingEdgeVoices={loadingEdgeVoices}
+            onLoadEdgeVoices={cargarVocesEdge}
+            hasDub={selectedId != null && (project?.dubs.includes(selectedId) ?? false)}
+            existingDubUrl={selectedDubUrl}
+            onGenerateSegment={generarDoblajeSegmento}
+          />
         </aside>
       </div>
       <footer className="app__footer">
-        <Transport />
+        <Timeline
+          video={videoEl}
+          segments={segments}
+          selectedId={selectedId}
+          onSelect={seleccionarSegmento}
+          audioPath={project?.audio_path ?? null}
+          outputLanguages={[targetLanguage]}
+          projectPath={project?.path ?? null}
+          dubs={project?.dubs ?? []}
+          dubVersion={dubVersion}
+          canDub={segments.some((s) => s.translation.trim().length > 0) && dubVoice !== ""}
+          dubbing={dubbing}
+          dubProgress={dubProgress}
+          onGenerateDub={generarDoblaje}
+        />
       </footer>
       {showModels && (
         <ModelManager

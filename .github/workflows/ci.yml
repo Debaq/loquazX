@@ -42,7 +42,9 @@ jobs:
             librsvg2-dev \
             ffmpeg \
             cmake \
-            libclang-dev
+            libclang-dev \
+            libpcaudio-dev \
+            libsonic-dev
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri

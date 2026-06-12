@@ -3,7 +3,7 @@
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Versión del formato de carpeta. Incrementar solo con migración documentada.
@@ -74,6 +74,8 @@ pub struct Project {
     pub video_path: Option<String>,
     /// Ruta absoluta del WAV extraído para whisper, si existe.
     pub audio_path: Option<String>,
+    /// Ids de los segmentos que ya tienen audio de doblaje en `runs/dub/` (ADR-009).
+    pub dubs: Vec<String>,
 }
 
 fn resolved_video_path(dir: &Path, manifest: &Manifest) -> Option<String> {
@@ -135,7 +137,24 @@ pub fn create(
         segments: Vec::new(),
         video_path: None,
         audio_path: None,
+        dubs: Vec::new(),
     })
+}
+
+/// Cambia los idiomas de origen y destino de un proyecto existente y reescribe el
+/// manifiesto. El idioma de origen es el que whisper usa al transcribir (ADR-004):
+/// fijarlo correctamente evita transcribir, p. ej., un audio en inglés como español.
+pub fn set_languages(
+    path: &Path,
+    source_language: &str,
+    target_language: &str,
+) -> Result<Project, String> {
+    let mut manifest: Manifest = read_json(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    manifest.source_language = source_language.to_string();
+    manifest.target_language = target_language.to_string();
+    write_json(&path.join("project.json"), &manifest)?;
+    open(path)
 }
 
 pub fn open(path: &Path) -> Result<Project, String> {
@@ -157,6 +176,7 @@ pub fn open(path: &Path) -> Result<Project, String> {
         video_path: resolved_video_path(path, &manifest),
         audio_path: resolved_audio_path(path, &manifest),
         manifest,
+        dubs: existing_dubs(path, &segments),
         segments,
     })
 }
@@ -206,6 +226,7 @@ pub fn import_video(path: &Path, video: &Path, copy: bool) -> Result<Project, St
         video_path: resolved_video_path(path, &manifest),
         audio_path: None,
         manifest,
+        dubs: existing_dubs(path, &segments),
         segments,
     })
 }
@@ -246,6 +267,7 @@ pub fn extract_audio(path: &Path) -> Result<Project, String> {
         video_path: resolved_video_path(path, &manifest),
         audio_path: resolved_audio_path(path, &manifest),
         manifest,
+        dubs: existing_dubs(path, &segments),
         segments,
     })
 }
@@ -366,6 +388,157 @@ pub fn import_translation(path: &Path, response: &Path) -> Result<ImportResult, 
         project: open(path)?,
         report,
     })
+}
+
+/// ADR-008: traduce los segmentos con el motor local y persiste el resultado.
+/// Reutiliza `build_request` (ADR-006) para armar la entrada y `apply_response`
+/// para volcar la salida del motor sobre `segments.json`, igual que la importación.
+pub fn translate_local(
+    path: &Path,
+    model: &Path,
+    on_progress: impl Fn(usize, usize),
+) -> Result<ImportResult, String> {
+    let manifest: Manifest = read_json(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
+        .unwrap_or_default()
+        .segments;
+    if segments.is_empty() {
+        return Err("No hay segmentos para traducir. Transcribe el audio primero.".to_string());
+    }
+
+    let request = crate::translation::build_request(
+        &manifest.source_language,
+        &manifest.target_language,
+        &segments,
+    );
+    let (response_segments, _engine_report) =
+        crate::translate_engine::translate(model, &request, on_progress)?;
+
+    let response = crate::translation::TranslationResponse {
+        schema: crate::translation::RESPONSE_SCHEMA.to_string(),
+        target_language: manifest.target_language.clone(),
+        segments: response_segments,
+    };
+    let (segments, report) = crate::translation::apply_response(segments, &response);
+    write_json(&path.join("segments.json"), &SegmentsFile { segments })?;
+
+    Ok(ImportResult {
+        project: open(path)?,
+        report,
+    })
+}
+
+/// Directorio donde viven los WAV de doblaje generados (bajo `runs/`, ADR-002).
+fn dub_dir(dir: &Path) -> PathBuf {
+    dir.join("runs").join("dub")
+}
+
+/// Ruta del WAV de doblaje de un segmento, emparejado por `id` como el resto del
+/// pipeline (ADR-009). Hay un único WAV por segmento (regenerable in situ).
+pub fn dub_path(dir: &Path, seg_id: &str) -> PathBuf {
+    dub_dir(dir).join(format!("{seg_id}.wav"))
+}
+
+/// Ids de los segmentos que ya tienen un WAV de doblaje en disco.
+fn existing_dubs(dir: &Path, segments: &[Segment]) -> Vec<String> {
+    segments
+        .iter()
+        .filter(|s| dub_path(dir, &s.id).is_file())
+        .map(|s| s.id.clone())
+        .collect()
+}
+
+/// Resumen de una corrida de doblaje sobre un proyecto.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct DubReport {
+    /// Segmentos sintetizados con éxito.
+    pub generated: usize,
+    /// Segmentos sin traducción (se omiten, no son un error).
+    pub skipped: usize,
+}
+
+/// Resultado de doblar un proyecto: el proyecto recargado y el resumen.
+#[derive(Debug, Serialize)]
+pub struct DubResult {
+    pub project: Project,
+    pub report: DubReport,
+}
+
+fn load_segments(path: &Path) -> Result<Vec<Segment>, String> {
+    read_json::<Manifest>(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    Ok(read_json::<SegmentsFile>(&path.join("segments.json"))
+        .unwrap_or_default()
+        .segments)
+}
+
+/// Genera el doblaje de todos los segmentos con traducción (ADR-009): por cada
+/// uno sintetiza con `settings` y ajusta el audio al hueco `end - start`,
+/// dejando `runs/dub/<id>.wav`. Emite `on_progress(hechos, total)` segmento a
+/// segmento. Los segmentos sin traducción se omiten. La primera generación con
+/// Piper exige la voz descargada; con edge-tts exige red.
+pub fn generate_dub(
+    path: &Path,
+    settings: &crate::tts::DubSettings,
+    models_dir: &Path,
+    on_progress: impl Fn(usize, usize),
+) -> Result<DubResult, String> {
+    let segments = load_segments(path)?;
+    let pendientes: Vec<&Segment> = segments
+        .iter()
+        .filter(|s| !s.translation.trim().is_empty())
+        .collect();
+    let total = pendientes.len();
+    if total == 0 {
+        return Err(
+            "No hay segmentos traducidos para doblar. Traduce el audio primero.".to_string(),
+        );
+    }
+
+    on_progress(0, total);
+    for (i, segment) in pendientes.iter().enumerate() {
+        let target = (segment.end - segment.start).max(0.0);
+        crate::tts::synth_segment(
+            settings,
+            &segment.translation,
+            models_dir,
+            target,
+            &dub_path(path, &segment.id),
+        )?;
+        on_progress(i + 1, total);
+    }
+
+    let report = DubReport {
+        generated: total,
+        skipped: segments.len() - total,
+    };
+    Ok(DubResult {
+        project: open(path)?,
+        report,
+    })
+}
+
+/// Genera (o regenera) el doblaje de un único segmento y devuelve la ruta del
+/// WAV resultante. Útil para la regeneración por segmento del `EditPanel`.
+pub fn generate_dub_segment(
+    path: &Path,
+    seg_id: &str,
+    settings: &crate::tts::DubSettings,
+    models_dir: &Path,
+) -> Result<PathBuf, String> {
+    let segments = load_segments(path)?;
+    let segment = segments
+        .iter()
+        .find(|s| s.id == seg_id)
+        .ok_or_else(|| format!("No existe el segmento «{seg_id}»."))?;
+    if segment.translation.trim().is_empty() {
+        return Err("El segmento no tiene traducción que doblar.".to_string());
+    }
+    let out = dub_path(path, seg_id);
+    let target = (segment.end - segment.start).max(0.0);
+    crate::tts::synth_segment(settings, &segment.translation, models_dir, target, &out)?;
+    Ok(out)
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {

@@ -180,6 +180,58 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 **Commits asociados:** se enlazarán en el PR que cierra #14.
 
+### 2026-06-12 — Numeración del flujo y decisión del motor TTS (ADR-009)
+
+**Herramienta:** Claude Opus 4.8 (Claude Code)
+
+**Contexto:** Antes de implementar el doblaje se detectó que la barra superior numeraba los pasos saltándose «Importar video» (que vivía solo en el panel central). En paralelo se definió el motor de síntesis de voz para la etapa de doblaje.
+
+**Aporte de la IA:** Fix de la barra superior: botón «Importar video» (paso 2, icono `Film`) y numeración del selector de idioma de origen (paso 4), renumeración del resto (extraer audio→3, transcribir→5, traducir→6) y eliminación del botón redundante de `VideoPreview`. Borrador del ADR-009 (edge-tts online vs. Piper local vs. XTTS-v2 vs. dos motores tras firma común). Selector de voz en `EditPanel` con Piper (default local), edge-tts (opt-in online) y XTTS-v2 deshabilitado, con guía de cuál usar. Implementación de la descarga de voces Piper: helper de descarga compartido `download.rs` (refactor de `models.rs` para reusarlo), módulo `voices.rs` (lista/descarga `.onnx`+`.onnx.json`/borrado, con tests), comandos Tauri `listar_voces`/`descargar_voz`/`eliminar_voz`, y conversión del modal «Modelo» en «Modelos y voces» con pestañas (Transcripción · Voces). Revisión del ADR-008: la traducción local pasa de LLM GGUF/llama.cpp (lento y pesado en CPU) a NMT NLLB-200 vía ONNX, reusando el `ort` que entra para Piper como backend de inferencia compartido. Previsualización de voces edge-tts: módulo `tts_edge.rs` (crate `msedge-tts`, blocking), comandos `listar_voces_edge`/`probar_voz_edge`, y pestaña «Voces edge-tts (online)» en el modal con filtro por idioma, texto de muestra y reproducción del mp3 por `url_media`. Ajuste de layout del modal para que solo la lista interior se desplace.
+
+**Decisiones humanas:**
+
+- Reporte del hueco de numeración y orden de quitar el botón redundante.
+- Motor TTS: dos motores tras una firma común — Piper local por defecto (cumple ADR-001 por construcción) y edge-tts online como opt-in explícito (Rust puro, sin sidecar Python). XTTS-v2 (clonación de voz) queda visible pero deshabilitado como feature futuro.
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
+
+**Commits asociados:** se enlazarán en el PR asociado.
+
+### 2026-06-12 — Inferencia del motor de traducción local NLLB (ADR-008)
+
+**Herramienta:** Claude Opus 4.8 (Claude Code)
+
+**Contexto:** Con la descarga del modelo NLLB ya operativa, faltaba la pieza central del ADR-008 revisado: usar el modelo para traducir dentro de la app, sin red. `translate_engine::translate` era un *stub* que devolvía «no implementado».
+
+**Aporte de la IA:** Implementación de la inferencia seq2seq sobre `ort` (ONNX Runtime 2.0-rc) y `tokenizers`: carga del encoder y el decoder cuantizados (variante sin caché `decoder_model_quantized.onnx`, porque `ort` no permite construir los tensores de caché vacíos —dim 0— que exigiría el decoder fusionado), tokenización con el formato NLLB (`[idioma_origen] tokens… </s>`), generación greedy en el decoder arrancando con `[</s>, idioma_destino]` (equivalente a `decoder_start_token_id` + `forced_bos_token_id`), y detokenización. Mapeo de códigos ISO cortos del proyecto a códigos FLORES-200 (`es`→`spa_Latn`, etc.). Cableado del botón «Traducir con IA local» (paso 6) en `TopBar`/`App.tsx`: verifica que el modelo esté descargado, persiste lo editado, escucha `traduccion:progreso` para mostrar el avance segmento a segmento y vuelca el resultado con `apply_response`. Tests de `nllb_code` y `argmax`. Entradas de CHANGELOG y este registro.
+
+**Decisiones humanas:**
+
+- Orden de implementar la inferencia ahora que la descarga funciona.
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge. La inferencia end-to-end requiere el modelo descargado (~900 MB) y se valida manualmente sobre un proyecto real; los tests automáticos cubren el mapeo de idiomas y utilidades, no la corrida ONNX.
+
+**Commits asociados:** se enlazarán en el PR asociado.
+
+---
+
+### 2026-06-12 — Generación del doblaje por segmento (ADR-009)
+
+**Herramienta:** Claude Opus 4.8 (Claude Code)
+
+**Contexto:** Con la traducción resuelta y el andamiaje de voces ya en su sitio (descarga Piper en `voices.rs`, previsualización edge-tts en `tts_edge.rs`), faltaba la pieza central del ADR-009: convertir la traducción de cada segmento en audio. El selector de voz del `EditPanel` y la pista de doblaje de la `Timeline` estaban deshabilitados.
+
+**Aporte de la IA:** Firma común de síntesis `tts::synth_segment` que despacha Piper (local, por defecto) o edge-tts (online, opt-in) y deja un WAV mono ajustado al hueco del segmento. Piper se sintetiza con el crate `piper-rs` (fonemización espeak-ng embebida + inferencia ONNX sobre el mismo `ort` de ADR-008); edge-tts reutiliza `tts_edge` (mp3) y se transcodifica a WAV. Helpers ffmpeg en `audio.rs` (`transcode_to_wav`, `fit_duration` con cadena `atempo` acotada, `wav_duration`) refactorizando la invocación común. Orquestación por proyecto en `project.rs` (`generate_dub` masivo y `generate_dub_segment`, WAV determinista en `runs/dub/<id>.wav`, `Project.dubs`). Comandos Tauri `generar_doblaje` (asíncrono, evento `doblaje:progreso`) y `generar_doblaje_segmento`. Frontend: `EditPanel` con motor + voz (Piper descargadas / edge por idioma) y generación + reproducción por segmento; `Timeline` con clips de doblaje y botón de generación masiva con progreso; carga y selección de voces compartida en `App.tsx`. Enlace de `pcaudio`/`sonic` en `build.rs` (espeak-ng en Linux los referencia sin emitir el enlace). Tests de `atempo_chain`, `wav_duration`, deserialización de motor/ajustes y un smoke test `#[ignore]` de Piper end-to-end.
+
+**Decisiones humanas:**
+
+- Implementar **ambos** motores en este PR tras la firma común (no solo uno).
+- Doblar solo al `target_language` actual; el multi-idioma de salida queda para después.
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge. La síntesis Piper end-to-end se verificó localmente con la voz `it_IT-riccardo-x_low` (WAV real ajustado al hueco con `atempo`); los tests automáticos cubren utilidades y el ajuste de duración, no la corrida ONNX (smoke test ignorado por defecto).
+
+**Commits asociados:** se enlazarán en el PR asociado.
+
 ---
 
 ## Plantilla en blanco para nuevas entradas

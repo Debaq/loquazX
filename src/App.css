@@ -9,6 +9,8 @@
   --accent-soft: #2a3a5a;
   font-family: system-ui, -apple-system, sans-serif;
   color: var(--text);
+  /* Renderiza los controles nativos (select, opciones, scrollbars) en oscuro. */
+  color-scheme: dark;
 }
 
 * {
@@ -84,6 +86,11 @@ textarea:focus, input:focus, select:focus {
   align-items: center;
   justify-content: center;
   min-width: 0;
+  /* Sin esto, la altura mínima automática del ítem (el video) crece la fila
+     1fr y empuja la timeline del footer fuera de la ventana, ocultando sus
+     botones. Forzamos que respete su celda. */
+  min-height: 0;
+  overflow: hidden;
 }
 .app__footer {
   background: var(--bg-elev);
@@ -105,6 +112,44 @@ textarea:focus, input:focus, select:focus {
 .topbar__actions {
   display: flex;
   gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.topbar__lang {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.topbar__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+}
+.topbar__btn--label {
+  width: auto;
+  padding: 0 0.6rem;
+  font-size: 0.8rem;
+}
+.topbar__lang--step {
+  margin-left: 0.3rem;
+}
+.topbar__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.topbar__spin {
+  animation: topbar-spin 1s linear infinite;
+}
+@keyframes topbar-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .segments__header {
@@ -218,6 +263,11 @@ textarea:focus, input:focus, select:focus {
   color: var(--text-dim);
   font-style: italic;
 }
+.edit__audio {
+  width: 100%;
+  margin-top: 0.5rem;
+  height: 34px;
+}
 
 .modal {
   position: fixed;
@@ -234,7 +284,11 @@ textarea:focus, input:focus, select:focus {
   border-radius: 8px;
   width: min(560px, 92vw);
   max-height: 86vh;
-  overflow-y: auto;
+  /* Columna flex: encabezado, pestañas y controles quedan fijos; solo la lista
+     interior (`.modelos`) se desplaza. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 1rem 1.2rem 1.2rem;
 }
 .modal__header {
@@ -251,6 +305,50 @@ textarea:focus, input:focus, select:focus {
   font-size: 0.85rem;
   margin: 0.4rem 0 1rem;
 }
+.modal__tabs {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.8rem;
+  border-bottom: 1px solid var(--border, #333);
+}
+.modal__tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.4rem 0.7rem;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.modal__tabs button.is-active {
+  color: var(--text);
+  border-bottom-color: #ffd23f;
+}
+.edge__controls {
+  display: flex;
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+  align-items: flex-end;
+}
+.edge__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.edge__field--grow {
+  flex: 1;
+}
+.edge__field input,
+.edge__field select {
+  font-size: 0.85rem;
+}
+.edge__audio {
+  width: 100%;
+  height: 2rem;
+  margin-bottom: 0.8rem;
+}
 
 .modelos {
   list-style: none;
@@ -259,6 +357,10 @@ textarea:focus, input:focus, select:focus {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  /* Única zona desplazable del modal: las listas largas scrollean, no el resto. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 .modelos__item {
   background: var(--bg-elev-2);
@@ -321,28 +423,199 @@ textarea:focus, input:focus, select:focus {
   justify-content: flex-end;
 }
 
-.transport {
-  display: grid;
-  grid-template-columns: auto auto 1fr;
-  gap: 1rem;
-  align-items: center;
-}
-.transport__controls {
+.timeline {
   display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.timeline__controls {
+  display: flex;
+  align-items: center;
   gap: 0.3rem;
 }
-.transport__time {
+.timeline__time {
+  margin-left: 0.6rem;
   font-family: ui-monospace, monospace;
   color: var(--text-dim);
   font-size: 0.85rem;
 }
-.transport__bar {
-  height: 6px;
+.timeline__zoom {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+.timeline__zoom-level {
+  min-width: 3.2em;
+  text-align: center;
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.timeline__scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.timeline__tracks {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+  min-width: 100%;
+}
+/* Cursor de reproducción común a todas las pistas. */
+.timeline__playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 3;
+}
+.timeline__track {
+  position: relative;
+}
+.timeline__label {
+  position: absolute;
+  top: 2px;
+  left: 5px;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  pointer-events: none;
+  z-index: 2;
+}
+.timeline__lane {
+  position: relative;
+  height: 56px;
   background: var(--bg);
   border-radius: 3px;
   overflow: hidden;
 }
-.transport__progress {
-  height: 100%;
+/* La barra de segmentos es más baja; el audio, lo principal, más alto. */
+.timeline__track--ruler .timeline__lane {
+  height: 40px;
+}
+.timeline__track--audio .timeline__lane {
+  height: 100px;
+}
+.timeline__progress {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
   background: var(--accent);
+  opacity: 0.12;
+  pointer-events: none;
+}
+/* Líneas verticales que marcan el inicio de cada segmento. */
+.timeline__marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+.timeline__segment {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  background: var(--accent);
+  opacity: 0.35;
+  border-radius: 2px;
+  min-width: 1px;
+}
+.timeline__segment:hover {
+  opacity: 0.55;
+}
+.timeline__segment.is-selected {
+  opacity: 0.8;
+  outline: 1px solid var(--accent);
+}
+.timeline__wave {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.timeline__wave path {
+  stroke: var(--accent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.75;
+}
+/* Cada segmento es un bloque de audio con su trozo de onda dentro. */
+.timeline__clip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  overflow: hidden;
+  opacity: 0.85;
+}
+.timeline__clip:hover {
+  opacity: 1;
+}
+.timeline__clip.is-selected {
+  opacity: 1;
+  box-shadow: 0 0 0 1px var(--accent);
+  z-index: 1;
+}
+.timeline__lane--future {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--bg),
+    var(--bg) 8px,
+    var(--bg-elev) 8px,
+    var(--bg-elev) 16px
+  );
+}
+/* Doblaje: clip con su onda dentro (como el audio) y botón de generación masiva. */
+.timeline__clip--dub {
+  background: var(--bg-elev);
+  border-color: var(--ok, #3fb950);
+}
+.timeline__clip--dub .timeline__wave path {
+  stroke: var(--ok, #3fb950);
+}
+.timeline__dub-btn {
+  position: absolute;
+  top: 2px;
+  right: 5px;
+  z-index: 3;
+  font-size: 0.65rem;
+  padding: 1px 6px;
+}
+/* Selector de canal de escucha (original vs idioma de doblaje). */
+.timeline__channel {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+}
+.timeline__channel select {
+  font-size: 0.8rem;
+}
+/* Resalta la pista del canal que se está escuchando. */
+.timeline__label.is-active {
+  color: var(--ok, #3fb950);
+  font-weight: 600;
+}
+.timeline__lane--wave.is-active {
+  box-shadow: inset 0 0 0 1px var(--ok, #3fb950);
+}
+.timeline__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  color: var(--text-dim);
 }
