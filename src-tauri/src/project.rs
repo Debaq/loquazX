@@ -292,6 +292,82 @@ pub fn save_segments(path: &Path, segments: Vec<Segment>) -> Result<(), String> 
     write_json(&path.join("segments.json"), &SegmentsFile { segments })
 }
 
+/// Resultado de exportar la solicitud de traducción (ADR-006).
+#[derive(Debug, Serialize)]
+pub struct ExportResult {
+    /// Ruta absoluta del JSON de solicitud.
+    pub request_file: String,
+    /// Ruta absoluta del prompt para el LLM.
+    pub prompt_file: String,
+    /// Cantidad de segmentos exportados.
+    pub segment_count: usize,
+}
+
+/// Resultado de importar la respuesta de traducción (ADR-006).
+#[derive(Debug, Serialize)]
+pub struct ImportResult {
+    pub project: Project,
+    pub report: crate::translation::MergeReport,
+}
+
+/// ADR-006: escribe en `exports/` la solicitud JSON y el prompt para el LLM externo.
+pub fn export_translation(path: &Path) -> Result<ExportResult, String> {
+    let manifest: Manifest = read_json(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
+        .unwrap_or_default()
+        .segments;
+    if segments.is_empty() {
+        return Err("No hay segmentos para traducir. Transcribe el audio primero.".to_string());
+    }
+
+    let exports = path.join("exports");
+    // `exports/` existe desde create(), pero proyectos manipulados a mano pueden no tenerla.
+    fs::create_dir_all(&exports)
+        .map_err(|e| format!("No se pudo crear el directorio exports: {e}"))?;
+
+    let request = crate::translation::build_request(
+        &manifest.source_language,
+        &manifest.target_language,
+        &segments,
+    );
+    let prompt = crate::translation::build_prompt(&request);
+
+    let request_file = exports.join("traduccion-solicitud.json");
+    let prompt_file = exports.join("traduccion-prompt.md");
+    write_json(&request_file, &request)?;
+    fs::write(&prompt_file, prompt).map_err(|e| format!("No se pudo escribir el prompt: {e}"))?;
+
+    Ok(ExportResult {
+        request_file: request_file.display().to_string(),
+        prompt_file: prompt_file.display().to_string(),
+        segment_count: segments.len(),
+    })
+}
+
+/// ADR-006: lee el JSON de respuesta del LLM y rellena `translation` por `id`.
+pub fn import_translation(path: &Path, response: &Path) -> Result<ImportResult, String> {
+    if !path.join("project.json").is_file() {
+        return Err(format!(
+            "No es una carpeta de proyecto loquazX válida: {}",
+            path.display()
+        ));
+    }
+    let response: crate::translation::TranslationResponse =
+        read_json(response).map_err(|e| format!("El JSON de traducción no es válido: {e}"))?;
+    let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
+        .unwrap_or_default()
+        .segments;
+
+    let (segments, report) = crate::translation::apply_response(segments, &response);
+    write_json(&path.join("segments.json"), &SegmentsFile { segments })?;
+
+    Ok(ImportResult {
+        project: open(path)?,
+        report,
+    })
+}
+
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     let raw =
         fs::read_to_string(path).map_err(|e| format!("no se pudo leer {}: {e}", path.display()))?;
@@ -533,6 +609,80 @@ mod tests {
     fn transcribir_falla_fuera_de_un_proyecto() {
         let dir = tempfile::tempdir().unwrap();
         assert!(transcribe(dir.path(), &dir.path().join("modelo.bin")).is_err());
+    }
+
+    #[test]
+    fn exportar_traduccion_escribe_solicitud_y_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.lqzx");
+        create(&ruta, "Demo", "es", "en").unwrap();
+        save_segments(&ruta, vec![segmento_demo()]).unwrap();
+
+        let resultado = export_translation(&ruta).unwrap();
+
+        assert_eq!(resultado.segment_count, 1);
+        assert!(ruta.join("exports/traduccion-solicitud.json").is_file());
+        assert!(ruta.join("exports/traduccion-prompt.md").is_file());
+        let solicitud = fs::read_to_string(ruta.join("exports/traduccion-solicitud.json")).unwrap();
+        assert!(solicitud.contains("\"source\": \"Hola\""));
+        assert!(solicitud.contains(crate::translation::REQUEST_SCHEMA));
+    }
+
+    #[test]
+    fn exportar_traduccion_falla_sin_segmentos() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.lqzx");
+        create(&ruta, "Demo", "es", "en").unwrap();
+        let error = export_translation(&ruta).unwrap_err();
+        assert!(error.contains("segmentos"));
+    }
+
+    #[test]
+    fn importar_traduccion_rellena_y_persiste() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.lqzx");
+        create(&ruta, "Demo", "es", "en").unwrap();
+        let mut segmento = segmento_demo();
+        segmento.translation = String::new();
+        save_segments(&ruta, vec![segmento]).unwrap();
+
+        let respuesta = dir.path().join("respuesta.json");
+        fs::write(
+            &respuesta,
+            format!(
+                "{{\"schema\":\"{}\",\"target_language\":\"en\",\"segments\":[{{\"id\":\"s1\",\"translation\":\"Hello\"}}]}}",
+                crate::translation::RESPONSE_SCHEMA
+            ),
+        )
+        .unwrap();
+
+        let resultado = import_translation(&ruta, &respuesta).unwrap();
+
+        assert_eq!(resultado.report.translated, 1);
+        assert_eq!(resultado.report.missing, 0);
+        assert_eq!(resultado.report.unknown, 0);
+        assert_eq!(resultado.project.segments[0].translation, "Hello");
+        // Persistió en disco.
+        let reabierto = open(&ruta).unwrap();
+        assert_eq!(reabierto.segments[0].translation, "Hello");
+    }
+
+    #[test]
+    fn importar_traduccion_falla_con_json_invalido() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.lqzx");
+        create(&ruta, "Demo", "es", "en").unwrap();
+        let respuesta = dir.path().join("malo.json");
+        fs::write(&respuesta, "esto no es json").unwrap();
+        assert!(import_translation(&ruta, &respuesta).is_err());
+    }
+
+    #[test]
+    fn importar_traduccion_falla_fuera_de_un_proyecto() {
+        let dir = tempfile::tempdir().unwrap();
+        let respuesta = dir.path().join("r.json");
+        fs::write(&respuesta, "{\"segments\":[]}").unwrap();
+        assert!(import_translation(dir.path(), &respuesta).is_err());
     }
 
     #[test]
