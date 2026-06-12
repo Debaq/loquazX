@@ -52,11 +52,19 @@ npm run tauri dev
 
 ## Uso
 
-La documentación detallada se irá agregando en `docs/` a medida que las funciones queden estables. El flujo actual es: crear/abrir proyecto → importar video → extraer audio → transcribir.
+La documentación detallada se irá agregando en `docs/` a medida que las funciones queden estables. El flujo actual es: crear/abrir proyecto → importar video → extraer audio → transcribir → traducir.
 
 ### Modelo de transcripción (ADR-007)
 
 El botón «Modelo» abre el gestor de modelos whisper. Cada nivel (`tiny`, `base`, `small`, `medium`, `large-v3`) puede descargarse desde Hugging Face con barra de progreso; el archivo queda guardado en el directorio de datos de la app y se reutiliza siempre. También puedes importar un `ggml-*.bin` propio o borrar modelos. La transcripción usa el nivel marcado «en uso», sin pedir un archivo cada vez.
+
+### Traducción (ADR-006)
+
+loquazX no traduce por sí mismo: exporta el trabajo para que lo haga el LLM que prefieras y luego importa el resultado, sin hacer red.
+
+1. **Exportar para traducir** escribe en `exports/` dos archivos: `traduccion-solicitud.json` (los segmentos con sus tiempos y texto origen) y `traduccion-prompt.md` (las instrucciones para el LLM).
+2. Pega el prompt y el JSON de solicitud en el LLM de tu elección y obtén un JSON de respuesta con la traducción de cada segmento.
+3. **Importar traducción** lee ese JSON de respuesta y rellena la traducción de cada segmento emparejando por `id`. La app informa cuántos se tradujeron, cuántos quedaron sin traducción y cuántos `id` no correspondían al proyecto.
 
 ## Contribuir
 

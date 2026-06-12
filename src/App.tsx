@@ -8,7 +8,13 @@ import VideoPreview from "./components/VideoPreview";
 import EditPanel from "./components/EditPanel";
 import Transport from "./components/Transport";
 import ModelManager from "./components/ModelManager";
-import type { Project, Segment, ModelInfo } from "./types";
+import type {
+  Project,
+  Segment,
+  ModelInfo,
+  ExportResult,
+  ImportResult,
+} from "./types";
 
 const NIVEL_POR_DEFECTO = "base";
 
@@ -154,6 +160,58 @@ function App() {
     }
   }
 
+  async function exportarTraduccion() {
+    if (!project) return;
+    // ADR-006: la exportación parte de segments.json en disco; persiste lo editado.
+    try {
+      await invoke("guardar_segmentos", {
+        path: project.path,
+        segmentos: segments,
+      });
+      const resultado = await invoke<ExportResult>("exportar_traduccion", {
+        path: project.path,
+      });
+      await message(
+        `Se exportaron ${resultado.segment_count} segmentos.\n\n` +
+          `Solicitud: ${resultado.request_file}\n` +
+          `Prompt: ${resultado.prompt_file}\n\n` +
+          "Pega el prompt y el JSON en un LLM e importa el JSON de respuesta.",
+        { title: "Exportar para traducir", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Exportar para traducir", kind: "error" });
+    }
+  }
+
+  async function importarTraduccion() {
+    if (!project) return;
+    const ruta = await open({
+      title: "Importar traducción (JSON de respuesta)",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!ruta) return;
+    // El merge parte de segments.json en disco; persiste lo editado antes.
+    try {
+      await invoke("guardar_segmentos", {
+        path: project.path,
+        segmentos: segments,
+      });
+      const resultado = await invoke<ImportResult>("importar_traduccion", {
+        path: project.path,
+        respuesta: ruta,
+      });
+      cargarProyecto(resultado.project);
+      const { translated, missing, unknown } = resultado.report;
+      await message(
+        `Traducidos: ${translated}\nSin traducción: ${missing}\n` +
+          `Ids ignorados (no existen en el proyecto): ${unknown}`,
+        { title: "Importar traducción", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Importar traducción", kind: "error" });
+    }
+  }
+
   async function guardarProyecto() {
     if (!project) return;
     try {
@@ -186,6 +244,8 @@ function App() {
         onSave={guardarProyecto}
         onExtractAudio={extraerAudio}
         onTranscribe={transcribir}
+        onExportTranslation={exportarTraduccion}
+        onImportTranslation={importarTraduccion}
         onOpenModels={() => setShowModels(true)}
       />
       <div className="app__body">

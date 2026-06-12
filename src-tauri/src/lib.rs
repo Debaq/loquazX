@@ -3,8 +3,9 @@ mod media_server;
 mod models;
 mod project;
 mod transcribe;
+mod translation;
 
-use project::{Project, Segment};
+use project::{ExportResult, ImportResult, Project, Segment};
 use std::path::PathBuf;
 use tauri::{Emitter, Manager};
 
@@ -137,6 +138,17 @@ async fn transcribir(
         .map_err(|e| format!("La transcripción se interrumpió: {e}"))?
 }
 
+// ADR-006: la app no traduce; exporta la solicitud y el prompt para un LLM externo.
+#[tauri::command]
+fn exportar_traduccion(path: String) -> Result<ExportResult, String> {
+    project::export_translation(&PathBuf::from(path))
+}
+
+#[tauri::command]
+fn importar_traduccion(path: String, respuesta: String) -> Result<ImportResult, String> {
+    project::import_translation(&PathBuf::from(path), &PathBuf::from(respuesta))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let media =
@@ -152,6 +164,8 @@ pub fn run() {
             importar_video,
             extraer_audio,
             transcribir,
+            exportar_traduccion,
+            importar_traduccion,
             listar_modelos,
             descargar_modelo,
             importar_modelo,

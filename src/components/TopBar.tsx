@@ -12,6 +12,8 @@ interface Props {
   onSave: () => void;
   onExtractAudio: () => void;
   onTranscribe: () => void;
+  onExportTranslation: () => void;
+  onImportTranslation: () => void;
   onOpenModels: () => void;
 }
 
@@ -29,6 +31,8 @@ function TopBar({
   onSave,
   onExtractAudio,
   onTranscribe,
+  onExportTranslation,
+  onImportTranslation,
   onOpenModels,
 }: Props) {
   return (
@@ -59,6 +63,20 @@ function TopBar({
             : hasSegments
               ? "Retranscribir"
               : "Transcribir"}
+        </button>
+        <button
+          type="button"
+          onClick={onExportTranslation}
+          disabled={!hasSegments || transcribing}
+        >
+          Exportar para traducir
+        </button>
+        <button
+          type="button"
+          onClick={onImportTranslation}
+          disabled={!hasSegments || transcribing}
+        >
+          Importar traducción
         </button>
         <button type="button" onClick={onOpenModels} disabled={transcribing}>
           Modelo: {modelLevel}
