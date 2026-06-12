@@ -15,7 +15,7 @@ Este archivo documenta el uso de herramientas de IA generativa en el desarrollo 
 |------------------------|------------------------|-----------------------------------------------------------|
 | Claude Opus 4.7 (1M)   | 2026-01                | Bootstrap del repositorio, scaffolding inicial, ADRs      |
 | Claude Fable 5         | 2026-06                | Implementación del formato de proyecto (ADR-002)          |
-| Claude Opus 4.8 (1M)   | 2026-06                | Etapa de traducción por export/import (ADR-006)           |
+| Claude Opus 4.8 (1M)   | 2026-06                | Traducción export/import (ADR-006) y modelo whisper (ADR-007) |
 
 Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
@@ -162,6 +162,23 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 **Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
 
 **Commits asociados:** se enlazarán en el PR que cierra #12.
+
+### 2026-06-11 — Descarga y gestión del modelo whisper (ADR-007)
+
+**Herramienta:** Claude Opus 4.8 (Claude Code)
+
+**Contexto:** La selección manual del archivo GGML en cada transcripción (ADR-004) resultó incómoda; se pidió una configuración que descargue un modelo por nivel y lo guarde para usarlo siempre (issue #14).
+
+**Aporte de la IA:** Borrador del ADR-007 (seguir manual vs. empaquetar vs. descargar y persistir). Módulo `models.rs` (niveles `tiny`–`large-v3`, descarga con `reqwest`/`rustls` a `app_data/models/` con escritura atómica `.part` + rename y progreso por callback, importación de `.bin` propio, borrado; seis tests). Comandos Tauri `listar_modelos`/`descargar_modelo` (emite `modelo:progreso`)/`importar_modelo`/`eliminar_modelo`; `transcribir` pasa a recibir el nivel y resolver el modelo guardado. Componente `ModelManager` (modal con descarga/importación/borrado, barra de progreso por eventos y selección del nivel «en uso»), botón «Modelo» en la barra y estilos. Actualización de CHANGELOG, README y nota de reemplazo en ADR-004.
+
+**Decisiones humanas:**
+
+- Reemplazar el selector de archivo por la descarga, conservando un fallback de importación de `.bin` propio.
+- Niveles `tiny`–`large-v3` con `base` por defecto.
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
+
+**Commits asociados:** se enlazarán en el PR que cierra #14.
 
 ---
 

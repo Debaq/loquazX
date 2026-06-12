@@ -1,7 +1,7 @@
 # ADR-004: Transcripción con whisper-rs y modelo provisto por el usuario
 
 - Fecha: 2026-06-11
-- Estado: Aceptada
+- Estado: Aceptada (la gestión del modelo fue reemplazada por ADR-007)
 - Decisor: Nicolás Baier
 
 ## Contexto

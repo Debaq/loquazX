@@ -36,6 +36,20 @@ export interface Project {
   audio_path: string | null;
 }
 
+export interface ModelInfo {
+  id: string;
+  label: string;
+  approx_size_mb: number;
+  downloaded: boolean;
+  path: string | null;
+}
+
+export interface DownloadProgress {
+  nivel: string;
+  descargado: number;
+  total: number;
+}
+
 export interface ExportResult {
   request_file: string;
   prompt_file: string;

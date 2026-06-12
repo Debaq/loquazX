@@ -35,9 +35,10 @@ Requisitos en tiempo de ejecución:
 
 - `ffmpeg` instalado y disponible en el `PATH` (ADR-003). En Linux está en los
   repositorios oficiales de todas las distribuciones.
-- Un modelo GGML de whisper para transcribir (ADR-004), descargable desde
-  <https://huggingface.co/ggerganov/whisper.cpp>. La aplicación pide el archivo
-  la primera vez que se transcribe; `ggml-base.bin` es un buen punto de partida.
+- Un modelo de whisper para transcribir. La app lo descarga desde el gestor
+  «Modelo» (ADR-007) y lo guarda de forma persistente; no hace falta conseguirlo
+  a mano. Conexión a internet solo para esa descarga; `base` es buen punto de
+  partida. También puede importarse un `ggml-*.bin` propio para trabajar offline.
 
 Requisitos de compilación: `cmake` y un compilador C/C++ con `libclang`
 (necesarios para compilar `whisper-rs`).
@@ -52,6 +53,10 @@ npm run tauri dev
 ## Uso
 
 La documentación detallada se irá agregando en `docs/` a medida que las funciones queden estables. El flujo actual es: crear/abrir proyecto → importar video → extraer audio → transcribir → traducir.
+
+### Modelo de transcripción (ADR-007)
+
+El botón «Modelo» abre el gestor de modelos whisper. Cada nivel (`tiny`, `base`, `small`, `medium`, `large-v3`) puede descargarse desde Hugging Face con barra de progreso; el archivo queda guardado en el directorio de datos de la app y se reutiliza siempre. También puedes importar un `ggml-*.bin` propio o borrar modelos. La transcripción usa el nivel marcado «en uso», sin pedir un archivo cada vez.
 
 ### Traducción (ADR-006)
 
