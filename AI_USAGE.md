@@ -127,6 +127,23 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 **Commits asociados:** se enlazarán en el PR que cierra #8.
 
+### 2026-06-11 — Fix: el video no se reproducía en Linux (ADR-005)
+
+**Herramienta:** Claude Fable 5 (Claude Code)
+
+**Contexto:** Al probar la app tras el merge de la transcripción (PR #9), el video importado no cargaba: `MediaError code=4` en el `<video>` (issue #10).
+
+**Aporte de la IA:** Diagnóstico instrumentando el frontend en caliente (el `fetch` al protocolo `asset` respondía 206 correcto, pero `GST_DEBUG` reveló `FormatError` en `MediaPlayerPrivateGStreamer`: WebKitGTK no enruta media por schemes custom). Borrador del ADR-005 (blob en memoria vs. `file://` vs. servidor HTTP local). Módulo `media_server.rs` (127.0.0.1, puerto efímero, token por sesión, allowlist de rutas canónicas, soporte de `Range`), comando `url_media`, `VideoPreview` consumiendo la URL local con error visible en pantalla, y seis tests del servidor. Verificación visual de la reproducción en la app real.
+
+**Decisiones humanas:**
+
+- Reporte del bug tras prueba manual.
+- Servir media por HTTP local en todas las plataformas para tener un único camino de código (documentado en ADR-005).
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
+
+**Commits asociados:** se enlazarán en el PR que cierra #10.
+
 ---
 
 ## Plantilla en blanco para nuevas entradas
