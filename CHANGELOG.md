@@ -14,6 +14,7 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 - Importación de video al proyecto (copia a `source/` o referencia a la ruta original, a elección del usuario) y reproducción en el panel de previsualización.
 - Extracción de audio del video a `media/audio.wav` (WAV 16 kHz mono, el formato de entrada de whisper.cpp) usando el ffmpeg del sistema según ADR-003, con botón «Extraer audio» en la barra superior. Al reimportar un video, el audio extraído previo se invalida.
 - Transcripción del audio a segmentos con `whisper-rs` según ADR-004: el usuario selecciona el modelo GGML (la última ruta se recuerda), el idioma sale del manifiesto y el resultado reemplaza `segments.json` previa confirmación. Botón «Transcribir» en la barra superior.
+- Etapa de traducción por exportación/importación de JSON según ADR-006: la app no traduce. «Exportar para traducir» escribe en `exports/` la solicitud `traduccion-solicitud.json` (segmentos con tiempos y texto origen) y el prompt `traduccion-prompt.md` para un LLM externo; «Importar traducción» lee el JSON de respuesta y rellena `translation` emparejando por `id`, informando traducidos, faltantes e `id` desconocidos. Módulo `translation.rs` con tipos versionados y comandos Tauri `exportar_traduccion`/`importar_traduccion`. Un motor de traducción local queda como mejora futura.
 
 ### Fixed
 

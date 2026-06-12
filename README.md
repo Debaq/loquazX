@@ -51,7 +51,15 @@ npm run tauri dev
 
 ## Uso
 
-Pendiente. La documentación se irá agregando en `docs/` a medida que las funciones queden estables.
+La documentación detallada se irá agregando en `docs/` a medida que las funciones queden estables. El flujo actual es: crear/abrir proyecto → importar video → extraer audio → transcribir → traducir.
+
+### Traducción (ADR-006)
+
+loquazX no traduce por sí mismo: exporta el trabajo para que lo haga el LLM que prefieras y luego importa el resultado, sin hacer red.
+
+1. **Exportar para traducir** escribe en `exports/` dos archivos: `traduccion-solicitud.json` (los segmentos con sus tiempos y texto origen) y `traduccion-prompt.md` (las instrucciones para el LLM).
+2. Pega el prompt y el JSON de solicitud en el LLM de tu elección y obtén un JSON de respuesta con la traducción de cada segmento.
+3. **Importar traducción** lee ese JSON de respuesta y rellena la traducción de cada segmento emparejando por `id`. La app informa cuántos se tradujeron, cuántos quedaron sin traducción y cuántos `id` no correspondían al proyecto.
 
 ## Contribuir
 
