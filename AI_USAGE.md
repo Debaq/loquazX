@@ -15,6 +15,7 @@ Este archivo documenta el uso de herramientas de IA generativa en el desarrollo 
 |------------------------|------------------------|-----------------------------------------------------------|
 | Claude Opus 4.7 (1M)   | 2026-01                | Bootstrap del repositorio, scaffolding inicial, ADRs      |
 | Claude Fable 5         | 2026-06                | Implementación del formato de proyecto (ADR-002)          |
+| Claude Opus 4.8 (1M)   | 2026-06                | Etapa de traducción por export/import (ADR-006)           |
 
 Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
@@ -143,6 +144,24 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 **Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
 
 **Commits asociados:** se enlazarán en el PR que cierra #10.
+
+### 2026-06-11 — Etapa de traducción por export/import (ADR-006)
+
+**Herramienta:** Claude Opus 4.8 (Claude Code)
+
+**Contexto:** Con la transcripción mergeada (PR #11), siguiente paso del pipeline: rellenar el campo `translation` de cada segmento (issue #12).
+
+**Aporte de la IA:** Borrador del ADR-006 (API en la nube vs. motor local embebido vs. export/import de JSON a un LLM externo). Módulo `translation.rs` con tipos versionados (`TranslationRequest`/`TranslationResponse`), `build_request` (incluye los tiempos para ajustar el largo al doblaje), `build_prompt` en español y `apply_response` tolerante con reporte de cruce; funciones `export_translation`/`import_translation` en `project.rs`, comandos Tauri `exportar_traduccion`/`importar_traduccion`, botones «Exportar para traducir» e «Importar traducción» en la barra superior con persistencia previa de los segmentos editados, nueve tests nuevos y actualización de CHANGELOG y README.
+
+**Decisiones humanas:**
+
+- Continuar con la traducción como siguiente feature.
+- La app no traduce ni hace red: exporta el trabajo a un LLM externo a elección del usuario; un motor de traducción local queda como mejora futura (export ahora, local después).
+- Incluir los tiempos `start`/`end` en la solicitud para que el LLM ajuste el largo de la traducción.
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge.
+
+**Commits asociados:** se enlazarán en el PR que cierra #12.
 
 ---
 

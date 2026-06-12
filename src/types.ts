@@ -35,3 +35,20 @@ export interface Project {
   video_path: string | null;
   audio_path: string | null;
 }
+
+export interface ExportResult {
+  request_file: string;
+  prompt_file: string;
+  segment_count: number;
+}
+
+export interface MergeReport {
+  translated: number;
+  missing: number;
+  unknown: number;
+}
+
+export interface ImportResult {
+  project: Project;
+  report: MergeReport;
+}
