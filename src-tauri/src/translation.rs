@@ -172,6 +172,7 @@ mod tests {
             end: 2.0,
             source: source.into(),
             translation: String::new(),
+            slide: None,
         }
     }
 

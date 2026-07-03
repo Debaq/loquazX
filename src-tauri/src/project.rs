@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Versión del formato de carpeta. Incrementar solo con migración documentada.
 pub const FORMAT_VERSION: u32 = 1;
 
-const SUBDIRS: [&str; 4] = ["source", "media", "runs", "exports"];
+const SUBDIRS: [&str; 5] = ["source", "media", "runs", "exports", "slides"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -26,6 +26,9 @@ pub struct Manifest {
     /// Ausente hasta que se extraiga el audio del video (ADR-003).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<ExtractedAudio>,
+    /// Ausente hasta que se importe un PDF de fondo para el modo presentación (ADR-010).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slides: Option<Presentation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +54,18 @@ pub struct SourceVideo {
     pub original_path: String,
 }
 
+/// PDF de fondo del modo presentación (ADR-010). Vive bajo `slides/`, copiado al
+/// proyecto: se asume que el usuario quiere un proyecto autocontenido.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Presentation {
+    /// Relativa al proyecto, p. ej. `slides/original.pdf`.
+    pub file: String,
+    /// Conteo de páginas leído con `pdfinfo` al importar.
+    pub page_count: u32,
+    /// Segundos desde época Unix al momento de importar.
+    pub imported_at: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Segment {
     pub id: String,
@@ -58,6 +73,11 @@ pub struct Segment {
     pub end: f64,
     pub source: String,
     pub translation: String,
+    /// Número de página del PDF que se muestra durante `[start, end)` (ADR-010).
+    /// `None` significa "mantener la última página vista" (al inicio del video se
+    /// asume la 1). Numeración 1‑based, validada contra `Presentation::page_count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide: Option<u32>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -76,6 +96,10 @@ pub struct Project {
     pub audio_path: Option<String>,
     /// Ids de los segmentos que ya tienen audio de doblaje en `runs/dub/` (ADR-009).
     pub dubs: Vec<String>,
+    /// Ruta absoluta del PDF de fondo del modo presentación (ADR-010), si hay uno.
+    pub slides_path: Option<String>,
+    /// Conteo de páginas del PDF de fondo, si hay uno.
+    pub slides_page_count: Option<u32>,
 }
 
 fn resolved_video_path(dir: &Path, manifest: &Manifest) -> Option<String> {
@@ -92,6 +116,29 @@ fn resolved_video_path(dir: &Path, manifest: &Manifest) -> Option<String> {
 fn resolved_audio_path(dir: &Path, manifest: &Manifest) -> Option<String> {
     let audio = manifest.audio.as_ref()?;
     Some(dir.join(&audio.file).display().to_string())
+}
+
+fn resolved_slides_path(dir: &Path, manifest: &Manifest) -> Option<String> {
+    let slides = manifest.slides.as_ref()?;
+    Some(dir.join(&slides.file).display().to_string())
+}
+
+/// Construye un `Project` a partir del directorio, el manifiesto y los
+/// segmentos. Centraliza el shape del `Project` para no repetir los campos
+/// derivados en cada alta. `path` es la ruta absoluta del proyecto.
+fn build_project(dir: &Path, manifest: Manifest, segments: Vec<Segment>) -> Project {
+    let slides_path = resolved_slides_path(dir, &manifest);
+    let slides_page_count = manifest.slides.as_ref().map(|s| s.page_count);
+    Project {
+        path: dir.display().to_string(),
+        video_path: resolved_video_path(dir, &manifest),
+        audio_path: resolved_audio_path(dir, &manifest),
+        dubs: existing_dubs(dir, &segments),
+        slides_path,
+        slides_page_count,
+        manifest,
+        segments,
+    }
 }
 
 fn unix_now() -> Result<u64, String> {
@@ -127,18 +174,12 @@ pub fn create(
         created_at,
         source: None,
         audio: None,
+        slides: None,
     };
     write_json(&path.join("project.json"), &manifest)?;
     write_json(&path.join("segments.json"), &SegmentsFile::default())?;
 
-    Ok(Project {
-        path: path.display().to_string(),
-        manifest,
-        segments: Vec::new(),
-        video_path: None,
-        audio_path: None,
-        dubs: Vec::new(),
-    })
+    Ok(build_project(path, manifest, Vec::new()))
 }
 
 /// Cambia los idiomas de origen y destino de un proyecto existente y reescribe el
@@ -171,14 +212,7 @@ pub fn open(path: &Path) -> Result<Project, String> {
         .unwrap_or_default()
         .segments;
 
-    Ok(Project {
-        path: path.display().to_string(),
-        video_path: resolved_video_path(path, &manifest),
-        audio_path: resolved_audio_path(path, &manifest),
-        manifest,
-        dubs: existing_dubs(path, &segments),
-        segments,
-    })
+    Ok(build_project(path, manifest, segments))
 }
 
 pub fn import_video(path: &Path, video: &Path, copy: bool) -> Result<Project, String> {
@@ -221,14 +255,7 @@ pub fn import_video(path: &Path, video: &Path, copy: bool) -> Result<Project, St
     let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
         .unwrap_or_default()
         .segments;
-    Ok(Project {
-        path: path.display().to_string(),
-        video_path: resolved_video_path(path, &manifest),
-        audio_path: None,
-        manifest,
-        dubs: existing_dubs(path, &segments),
-        segments,
-    })
+    Ok(build_project(path, manifest, segments))
 }
 
 pub fn extract_audio(path: &Path) -> Result<Project, String> {
@@ -262,14 +289,7 @@ pub fn extract_audio(path: &Path) -> Result<Project, String> {
     let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
         .unwrap_or_default()
         .segments;
-    Ok(Project {
-        path: path.display().to_string(),
-        video_path: resolved_video_path(path, &manifest),
-        audio_path: resolved_audio_path(path, &manifest),
-        manifest,
-        dubs: existing_dubs(path, &segments),
-        segments,
-    })
+    Ok(build_project(path, manifest, segments))
 }
 
 pub fn transcribe(path: &Path, model: &Path) -> Result<Project, String> {
@@ -295,6 +315,7 @@ pub fn transcribe(path: &Path, model: &Path) -> Result<Project, String> {
                 end: s.end,
                 source: s.text,
                 translation: String::new(),
+                slide: None,
             })
             .collect();
 
@@ -465,7 +486,7 @@ pub struct DubResult {
     pub report: DubReport,
 }
 
-fn load_segments(path: &Path) -> Result<Vec<Segment>, String> {
+pub fn load_segments(path: &Path) -> Result<Vec<Segment>, String> {
     read_json::<Manifest>(&path.join("project.json"))
         .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
     Ok(read_json::<SegmentsFile>(&path.join("segments.json"))
@@ -541,6 +562,226 @@ pub fn generate_dub_segment(
     Ok(out)
 }
 
+/// Importa un PDF como fondo del modo presentación (ADR-010). Copia el archivo
+/// al proyecto bajo `slides/` y persiste el conteo de páginas en el manifiesto.
+/// Si ya había un PDF, lo reemplaza (los segmentos previos conservan su `slide`,
+/// que se validará al renderizar).
+pub fn import_pdf(path: &Path, pdf: &Path) -> Result<Project, String> {
+    if !pdf.is_file() {
+        return Err(format!("El PDF no existe: {}", pdf.display()));
+    }
+    let ext = pdf
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    if ext != "pdf" {
+        return Err("El archivo seleccionado no es un PDF.".to_string());
+    }
+    let mut manifest: Manifest = read_json(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+
+    let page_count = crate::presentacion::conteo_paginas_pdf(pdf)?;
+
+    let slides_dir = path.join("slides");
+    fs::create_dir_all(&slides_dir)
+        .map_err(|e| format!("No se pudo crear el directorio slides: {e}"))?;
+    let name = pdf
+        .file_name()
+        .ok_or_else(|| format!("Ruta de PDF inválida: {}", pdf.display()))?;
+    let destination = slides_dir.join(name);
+    fs::copy(pdf, &destination)
+        .map_err(|e| format!("No se pudo copiar el PDF al proyecto: {e}"))?;
+    let relative = format!("slides/{}", name.to_string_lossy());
+
+    manifest.slides = Some(Presentation {
+        file: relative,
+        page_count,
+        imported_at: unix_now()?,
+    });
+    write_json(&path.join("project.json"), &manifest)?;
+
+    let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
+        .unwrap_or_default()
+        .segments;
+    Ok(build_project(path, manifest, segments))
+}
+
+/// Importa un audio arbitrario al proyecto, sin pasar por video. Pensado para el
+/// modo presentación (ADR-010): el usuario provee el audio original y la app lo
+/// transcodifica al formato uniforme (WAV PCM 16 bits mono a 16 kHz) reusando el
+/// pipeline de `extract_audio`. Persiste el resultado como `manifest.audio`.
+pub fn import_audio_presentation(path: &Path, audio: &Path) -> Result<Project, String> {
+    if !audio.is_file() {
+        return Err(format!("El audio no existe: {}", audio.display()));
+    }
+    let mut manifest: Manifest = read_json(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+
+    let relative = "media/audio.wav";
+    let output = path.join(relative);
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("No se pudo crear el directorio media: {e}"))?;
+    }
+    crate::audio::extract_wav_16k(audio, &output)?;
+
+    manifest.audio = Some(ExtractedAudio {
+        file: relative.to_string(),
+        extracted_at: unix_now()?,
+    });
+    write_json(&path.join("project.json"), &manifest)?;
+
+    let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
+        .unwrap_or_default()
+        .segments;
+    Ok(build_project(path, manifest, segments))
+}
+
+/// Esquema del JSON externo de import de segmentos (ADR-010). El usuario
+/// provee `start`, `end`, `source` y opcionalmente `slide`; la app asigna
+/// `id = uuid` y deja `translation = ""` para que el flujo de traducción los
+/// rellene después.
+#[derive(Debug, Deserialize)]
+pub struct SegmentImport {
+    pub start: f64,
+    pub end: f64,
+    pub source: String,
+    #[serde(default)]
+    pub slide: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SegmentsImportFile {
+    segments: Vec<SegmentImport>,
+}
+
+/// Importa segmentos desde un JSON externo (ADR-010). Sobrescribe los segmentos
+/// existentes; la UI confirma antes. Valida que `start < end` y que `slide`
+/// (si está) esté dentro de `page_count` cuando hay un PDF de fondo.
+pub fn import_segments_json(
+    path: &Path,
+    json: &Path,
+    page_count: Option<u32>,
+) -> Result<Project, String> {
+    if !path.join("project.json").is_file() {
+        return Err(format!(
+            "No es una carpeta de proyecto loquazX válida: {}",
+            path.display()
+        ));
+    }
+    let file: SegmentsImportFile =
+        read_json(json).map_err(|e| format!("El JSON de segmentos no es válido: {e}"))?;
+    if file.segments.is_empty() {
+        return Err("El JSON no contiene segmentos.".to_string());
+    }
+
+    let mut segments = Vec::with_capacity(file.segments.len());
+    for (i, s) in file.segments.into_iter().enumerate() {
+        if !s.start.is_finite() || !s.end.is_finite() {
+            return Err(format!(
+                "El segmento #{i} tiene tiempos inválidos (no finitos)."
+            ));
+        }
+        if s.end <= s.start {
+            return Err(format!(
+                "El segmento #{i} tiene end ({}) ≤ start ({}).",
+                s.end, s.start
+            ));
+        }
+        if let Some(p) = s.slide {
+            match page_count {
+                Some(max) if p < 1 || p > max => {
+                    return Err(format!(
+                        "El segmento #{i} pide la página {p} pero el PDF tiene {max}."
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "El segmento #{i} tiene `slide` pero el proyecto no tiene un PDF importado."
+                    ));
+                }
+                _ => {}
+            }
+        }
+        segments.push(Segment {
+            id: uuid::Uuid::new_v4().to_string(),
+            start: s.start,
+            end: s.end,
+            source: s.source,
+            translation: String::new(),
+            slide: s.slide,
+        });
+    }
+
+    write_json(&path.join("segments.json"), &SegmentsFile { segments })?;
+    open(path)
+}
+
+/// Resultado de renderizar la presentación (ADR-010).
+#[derive(Debug, Serialize)]
+pub struct RenderReport {
+    /// Ruta absoluta del mp4 producido.
+    pub output: String,
+    /// Duración total del video, en segundos.
+    pub duration_secs: f64,
+}
+
+/// Renderiza el video de presentación: rasteriza el PDF, concatena los WAV de
+/// doblaje con silencios y produce el mp4 final (ADR-010). Asume que el usuario
+/// ya tradujo y dobló los segmentos. Emite `on_progress(hechos, total)` por
+/// cada etapa (rasterizado, audio, video).
+pub fn render_presentation(
+    path: &Path,
+    on_progress: impl Fn(usize, usize),
+) -> Result<RenderReport, String> {
+    let manifest: Manifest = read_json(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    let slides = manifest
+        .slides
+        .as_ref()
+        .ok_or_else(|| "El proyecto no tiene un PDF importado.".to_string())?;
+    let pdf_abs = path.join(&slides.file);
+    if !pdf_abs.is_file() {
+        return Err(format!(
+            "El PDF del proyecto no existe: {}",
+            pdf_abs.display()
+        ));
+    }
+
+    let segments = load_segments(path)?;
+    if segments.is_empty() {
+        return Err("No hay segmentos en el proyecto.".to_string());
+    }
+    let page_count = slides.page_count;
+
+    on_progress(0, 3);
+    // 1) Rasteriza el PDF.
+    let pages_dir = path.join("slides").join("pages");
+    crate::presentacion::rasterizar_pdf(&pdf_abs, &pages_dir)?;
+    on_progress(1, 3);
+
+    // 2) Construye la pista de audio a partir de los WAV de doblaje.
+    let audio_out = path.join("slides").join("audio.wav");
+    crate::presentacion::concatenar_audio_doblaje(&segments, path, &audio_out)?;
+    on_progress(2, 3);
+
+    // 3) Compone el mp4 final.
+    let exports_dir = path.join("exports");
+    fs::create_dir_all(&exports_dir)
+        .map_err(|e| format!("No se pudo crear el directorio exports: {e}"))?;
+    let project_name = &manifest.name;
+    let output = exports_dir.join(format!("{project_name}.mp4"));
+    let duration =
+        crate::presentacion::componer_mp4(&pages_dir, page_count, &segments, &audio_out, &output)?;
+    on_progress(3, 3);
+
+    Ok(RenderReport {
+        output: output.display().to_string(),
+        duration_secs: duration,
+    })
+}
+
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     let raw =
         fs::read_to_string(path).map_err(|e| format!("no se pudo leer {}: {e}", path.display()))?;
@@ -567,6 +808,7 @@ mod tests {
             end: 3.2,
             source: "Hola".into(),
             translation: "Hello".into(),
+            slide: None,
         }
     }
 

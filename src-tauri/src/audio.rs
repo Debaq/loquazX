@@ -111,19 +111,21 @@ pub fn wav_duration(wav: &Path) -> Result<f64, String> {
     Ok(frames as f64 / sample_rate as f64)
 }
 
+/// Mensaje estándar cuando ffmpeg no está instalado. Reusado por otros
+/// módulos (p. ej. `presentacion`) que también lo invocan.
+pub fn ffmpeg_missing_message() -> String {
+    "ffmpeg no está instalado o no está en el PATH. Instálalo con el gestor \
+     de paquetes del sistema (p. ej. `sudo pacman -S ffmpeg` o `sudo apt \
+     install ffmpeg`)."
+        .to_string()
+}
+
 /// Corre ffmpeg con `args`, traduciendo la ausencia del binario y los fallos a
 /// mensajes en español. `accion` describe la tarea para el mensaje de error.
 fn run_ffmpeg(args: &[&OsStr], accion: &str) -> Result<(), String> {
     let result = Command::new("ffmpeg").args(args).output();
     let salida = match result {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(
-                "ffmpeg no está instalado o no está en el PATH. Instálalo con el gestor \
-                 de paquetes del sistema (p. ej. `sudo pacman -S ffmpeg` o `sudo apt \
-                 install ffmpeg`)."
-                    .to_string(),
-            )
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ffmpeg_missing_message()),
         Err(e) => return Err(format!("No se pudo ejecutar ffmpeg: {e}")),
         Ok(s) => s,
     };
