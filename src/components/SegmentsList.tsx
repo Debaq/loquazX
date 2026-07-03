@@ -28,6 +28,11 @@ function SegmentsList({ segments, selectedId, onSelect }: Props) {
               <span className="segments__time">
                 {formatoTiempo(s.start)} → {formatoTiempo(s.end)}
               </span>
+              {s.slide != null && (
+                <span className="segments__slide" title="Diapositiva">
+                  p.{s.slide}
+                </span>
+              )}
             </div>
             <div className="segments__text">{s.source}</div>
           </li>

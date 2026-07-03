@@ -4,6 +4,8 @@ export interface Segment {
   end: number;
   source: string;
   translation: string;
+  /** Número de página del PDF que se muestra durante `[start, end)` (ADR-010). */
+  slide?: number | null;
 }
 
 export interface SourceVideo {
@@ -17,6 +19,13 @@ export interface ExtractedAudio {
   extracted_at: number;
 }
 
+/** PDF de fondo del modo presentación (ADR-010). */
+export interface Presentation {
+  file: string;
+  page_count: number;
+  imported_at: number;
+}
+
 export interface ProjectManifest {
   id: string;
   format_version: number;
@@ -26,6 +35,7 @@ export interface ProjectManifest {
   created_at: number;
   source?: SourceVideo;
   audio?: ExtractedAudio;
+  slides?: Presentation;
 }
 
 export interface Project {
@@ -36,6 +46,10 @@ export interface Project {
   audio_path: string | null;
   /** Ids de segmentos que ya tienen audio de doblaje generado (ADR-009). */
   dubs: string[];
+  /** Ruta absoluta del PDF de fondo del modo presentación (ADR-010), si hay uno. */
+  slides_path: string | null;
+  /** Conteo de páginas del PDF de fondo, si hay uno. */
+  slides_page_count: number | null;
 }
 
 /** Motor de síntesis de voz para el doblaje (ADR-009). */
@@ -107,4 +121,10 @@ export interface MergeReport {
 export interface ImportResult {
   project: Project;
   report: MergeReport;
+}
+
+/** Resultado del render de presentación (ADR-010). */
+export interface RenderReport {
+  output: string;
+  duration_secs: number;
 }

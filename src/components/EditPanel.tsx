@@ -21,6 +21,8 @@ interface Props {
   existingDubUrl: string | null;
   /** Genera (o regenera) el doblaje del segmento y devuelve la URL para oírlo. */
   onGenerateSegment: () => Promise<string | null>;
+  /** Conteo de páginas del PDF importado (ADR-010); deshabilita el campo slide si es null. */
+  slidesPageCount: number | null;
 }
 
 function EditPanel({
@@ -37,6 +39,7 @@ function EditPanel({
   hasDub,
   existingDubUrl,
   onGenerateSegment,
+  slidesPageCount,
 }: Props) {
   const [generating, setGenerating] = useState(false);
   const [dubUrl, setDubUrl] = useState<string | null>(null);
@@ -93,6 +96,37 @@ function EditPanel({
           placeholder="Ingresa la traducción…"
         />
       </label>
+
+      {slidesPageCount != null && (
+        <label className="edit__field">
+          <span>
+            Diapositiva{" "}
+            {segment.slide != null ? `(p.${segment.slide})` : "(sin asignar)"}
+          </span>
+          <input
+            type="number"
+            min={1}
+            max={slidesPageCount}
+            value={segment.slide ?? ""}
+            placeholder="—"
+            onChange={(e) => {
+              const raw = e.target.value.trim();
+              if (raw === "") {
+                onChange(segment.id, { slide: null });
+                return;
+              }
+              const n = Number(raw);
+              if (!Number.isFinite(n)) return;
+              const clamped = Math.max(1, Math.min(slidesPageCount, Math.trunc(n)));
+              onChange(segment.id, { slide: clamped });
+            }}
+          />
+          <span className="edit__hint">
+            Página del PDF que se muestra durante este segmento (1–{slidesPageCount}).
+            Déjalo vacío para mantener la última diapositiva.
+          </span>
+        </label>
+      )}
 
       <div className="edit__voice">
         <div className="edit__field-title">Voz</div>

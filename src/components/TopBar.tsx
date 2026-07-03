@@ -10,6 +10,10 @@ import {
   Languages,
   Cpu,
   Loader,
+  FileText,
+  Music,
+  FilePlus2,
+  Clapperboard,
 } from "lucide-react";
 import { LANGUAGES } from "../languages";
 
@@ -38,6 +42,20 @@ interface Props {
   onImportTranslation: () => void;
   onTranslateLocal: () => void;
   onOpenModels: () => void;
+  /** Importa un PDF de fondo para el modo presentación (ADR-010). */
+  onImportPdf: () => void;
+  /** Importa un audio arbitrario cuando no hay video (ADR-010). */
+  onImportAudioPresentation: () => void;
+  /** Importa segmentos desde un JSON externo (ADR-010). */
+  onImportSegmentsJson: () => void;
+  /** Renderiza el video de presentación (ADR-010). */
+  onExportPresentation: () => void;
+  /** `true` cuando el proyecto tiene un PDF y al menos un segmento doblado. */
+  canExportPresentation: boolean;
+  /** `true` mientras se renderiza el video de presentación. */
+  renderingPresentation: boolean;
+  /** Avance del render de presentación, si está corriendo. */
+  renderProgress?: { etapa: number; total: number } | null;
 }
 
 const ICON_SIZE = 18;
@@ -67,6 +85,13 @@ function TopBar({
   onImportTranslation,
   onTranslateLocal,
   onOpenModels,
+  onImportPdf,
+  onImportAudioPresentation,
+  onImportSegmentsJson,
+  onExportPresentation,
+  canExportPresentation,
+  renderingPresentation,
+  renderProgress,
 }: Props) {
   return (
     <header className="topbar">
@@ -246,6 +271,62 @@ function TopBar({
         >
           <Cpu size={ICON_SIZE} />
           <span>{modelLevel}</span>
+        </button>
+        {/* ADR-010: herramientas del modo presentación (PDF + segmentos). */}
+        <button
+          type="button"
+          className="topbar__btn"
+          onClick={onImportPdf}
+          disabled={!canSave}
+          title="Importar PDF de fondo (presentación)"
+          aria-label="Importar PDF de fondo"
+        >
+          <FileText size={ICON_SIZE} />
+        </button>
+        <button
+          type="button"
+          className="topbar__btn"
+          onClick={onImportAudioPresentation}
+          disabled={!canSave || !!hasAudio}
+          title={
+            hasAudio
+              ? "El proyecto ya tiene audio. Reimporta el video o PDF para reemplazarlo."
+              : "Importar audio arbitrario para el modo presentación"
+          }
+          aria-label="Importar audio"
+        >
+          <Music size={ICON_SIZE} />
+        </button>
+        <button
+          type="button"
+          className="topbar__btn"
+          onClick={onImportSegmentsJson}
+          disabled={!canSave}
+          title="Importar segmentos desde un JSON"
+          aria-label="Importar segmentos JSON"
+        >
+          <FilePlus2 size={ICON_SIZE} />
+        </button>
+        <button
+          type="button"
+          className="topbar__btn topbar__btn--label"
+          onClick={onExportPresentation}
+          disabled={!canExportPresentation || renderingPresentation}
+          title={
+            renderingPresentation
+              ? renderProgress
+                ? `Renderizando presentación… (${renderProgress.etapa}/${renderProgress.total})`
+                : "Renderizando presentación…"
+              : "Exportar video de presentación"
+          }
+          aria-label="Exportar video de presentación"
+        >
+          {renderingPresentation ? (
+            <Loader size={ICON_SIZE} className="topbar__spin" />
+          ) : (
+            <Clapperboard size={ICON_SIZE} />
+          )}
+          <span>Exportar video</span>
         </button>
       </div>
     </header>

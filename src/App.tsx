@@ -19,6 +19,7 @@ import type {
   EdgeVoice,
   DubEngine,
   DubResult,
+  RenderReport,
 } from "./types";
 
 const NIVEL_POR_DEFECTO = "base";
@@ -72,6 +73,9 @@ function App() {
   // Cambia con cada generación (masiva o por segmento) para que la Timeline
   // recargue las ondas del doblaje, incluso al regenerar un segmento ya doblado.
   const [dubVersion, setDubVersion] = useState(0);
+  // ADR-010: estado del render de la presentación (PDF + audio doblado).
+  const [renderingPresentation, setRenderingPresentation] = useState(false);
+  const [renderProgress, setRenderProgress] = useState<{ etapa: number; total: number } | null>(null);
 
   // Desactiva el zoom del webview (Ctrl+rueda, pellizco, Ctrl +/-/0): la app
   // no debe escalar como página web; el único zoom es el de la línea de tiempo.
@@ -477,6 +481,114 @@ function App() {
     setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, ...cambios } : s)));
   }
 
+  // ADR-010: importa un PDF como fondo del modo presentación. Lee el conteo
+  // de páginas con un comando aparte para validar antes de confirmar.
+  async function importarPdf() {
+    if (!project) return;
+    const ruta = await open({
+      title: "Importar PDF de fondo",
+      filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+    if (!ruta) return;
+    try {
+      const pageCount = await invoke<number>("conteo_paginas_pdf", { pdf: ruta });
+      const continuar = await ask(
+        `El PDF tiene ${pageCount} páginas. Se copiará al proyecto.\n\n¿Continuar?`,
+        { title: "Importar PDF", kind: "info" },
+      );
+      if (!continuar) return;
+      const proyecto = await invoke<Project>("importar_pdf", {
+        path: project.path,
+        pdf: ruta,
+      });
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Importar PDF", kind: "error" });
+    }
+  }
+
+  // ADR-010: importa un audio arbitrario cuando el proyecto no tiene video.
+  async function importarAudioPresentacion() {
+    if (!project) return;
+    if (project.audio_path) {
+      await message(
+        "El proyecto ya tiene audio extraído. Reimporta el video o el PDF para reemplazarlo.",
+        { title: "Importar audio", kind: "warning" },
+      );
+      return;
+    }
+    const ruta = await open({
+      title: "Importar audio",
+      filters: [
+        { name: "Audio", extensions: ["wav", "mp3", "m4a", "ogg", "flac"] },
+      ],
+    });
+    if (!ruta) return;
+    try {
+      const proyecto = await invoke<Project>("importar_audio_presentacion", {
+        path: project.path,
+        audio: ruta,
+      });
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Importar audio", kind: "error" });
+    }
+  }
+
+  // ADR-010: importa segmentos desde un JSON externo. Sobrescribe los actuales
+  // previa confirmación.
+  async function importarSegmentosJson() {
+    if (!project) return;
+    const ruta = await open({
+      title: "Importar segmentos (JSON)",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!ruta) return;
+    if (segments.length > 0) {
+      const continuar = await ask(
+        "Esto reemplazará todos los segmentos actuales. ¿Continuar?",
+        { title: "Importar segmentos", kind: "warning" },
+      );
+      if (!continuar) return;
+    }
+    try {
+      const proyecto = await invoke<Project>("importar_segmentos_json", {
+        path: project.path,
+        json: ruta,
+      });
+      cargarProyecto(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Importar segmentos", kind: "error" });
+    }
+  }
+
+  // ADR-010: renderiza el video de presentación y deja el mp4 en `exports/`.
+  async function renderizarPresentacion() {
+    if (!project) return;
+    setRenderingPresentation(true);
+    setRenderProgress({ etapa: 0, total: 3 });
+    const desuscribir = await listen<{ etapa: number; total: number }>(
+      "presentacion:progreso",
+      (e) => setRenderProgress({ etapa: e.payload.etapa, total: e.payload.total }),
+    );
+    try {
+      await guardarProyecto();
+      const reporte = await invoke<RenderReport>("renderizar_presentacion", {
+        path: project.path,
+      });
+      await message(
+        `Video generado en ${reporte.output}\nDuración: ${reporte.duration_secs.toFixed(1)} s`,
+        { title: "Exportar video", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Exportar video", kind: "error" });
+    } finally {
+      desuscribir();
+      setRenderingPresentation(false);
+      setRenderProgress(null);
+    }
+  }
+
   return (
     <div className="app">
       <TopBar
@@ -504,6 +616,16 @@ function App() {
         onImportTranslation={importarTraduccion}
         onTranslateLocal={traducirLocal}
         onOpenModels={() => setShowModels(true)}
+        onImportPdf={importarPdf}
+        onImportAudioPresentation={importarAudioPresentacion}
+        onImportSegmentsJson={importarSegmentosJson}
+        onExportPresentation={renderizarPresentacion}
+        canExportPresentation={
+          project?.slides_path != null &&
+          segments.some((s) => project?.dubs.includes(s.id))
+        }
+        renderingPresentation={renderingPresentation}
+        renderProgress={renderProgress}
       />
       <div className="app__body">
         <aside className="app__left">
@@ -518,6 +640,11 @@ function App() {
             videoPath={project?.video_path ?? null}
             hasProject={project !== null}
             videoRef={setVideoEl}
+            projectPath={project?.path ?? null}
+            slidesPath={project?.slides_path ?? null}
+            slidesPageCount={project?.slides_page_count ?? null}
+            segments={segments}
+            selectedId={selectedId}
           />
         </main>
         <aside className="app__right">
@@ -535,6 +662,7 @@ function App() {
             hasDub={selectedId != null && (project?.dubs.includes(selectedId) ?? false)}
             existingDubUrl={selectedDubUrl}
             onGenerateSegment={generarDoblajeSegmento}
+            slidesPageCount={project?.slides_page_count ?? null}
           />
         </aside>
       </div>
