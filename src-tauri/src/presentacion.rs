@@ -6,7 +6,7 @@ use crate::audio::{self, wav_duration};
 use crate::project::{dub_path, Segment};
 use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Lee el conteo de páginas de un PDF usando `pdfinfo` (poppler). Si el binario
@@ -45,8 +45,11 @@ pub fn conteo_paginas_pdf(pdf: &Path) -> Result<u32, String> {
 /// Rasteriza el PDF a PNG en `out_dir` con `pdftoppm` (poppler) a 300 DPI:
 /// alta calidad para Full HD y superior, sin saltos visibles al proyectar
 /// (ADR-010). Devuelve el conteo de páginas leídas con `conteo_paginas_pdf`.
-/// Los archivos se nombran `page-1.png`, `page-2.png`, … con padding según
-/// la cantidad de dígitos.
+/// Tras rasterizar, normaliza los nombres a `page-1.png`, `page-2.png`, …
+/// sin padding: `pdftoppm` usa padding según la cantidad de páginas
+/// (`page-1.png` para 1–9, `page-01.png` para 10–99, `page-001.png` para
+/// 100+), lo que rompe cualquier código que asuma `page-N.png`. El esquema
+/// sin padding es único y portable.
 pub fn rasterizar_pdf(pdf: &Path, out_dir: &Path) -> Result<u32, String> {
     let page_count = conteo_paginas_pdf(pdf)?;
     fs::create_dir_all(out_dir)
@@ -67,27 +70,56 @@ pub fn rasterizar_pdf(pdf: &Path, out_dir: &Path) -> Result<u32, String> {
         ),
         Err(e) => Err(format!("No se pudo ejecutar pdftoppm: {e}")),
         Ok(s) if !s.success() => Err("pdftoppm falló al rasterizar el PDF.".to_string()),
-        Ok(_) => {
-            // Verificación rápida: el conteo de archivos generados debe coincidir.
-            let generados = fs::read_dir(out_dir)
-                .map_err(|e| format!("No se pudo leer el directorio de páginas: {e}"))?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|x| x.to_str())
-                        .map(|x| x.eq_ignore_ascii_case("png"))
-                        .unwrap_or(false)
-                })
-                .count() as u32;
-            if generados != page_count {
-                return Err(format!(
-                    "pdftoppm generó {generados} páginas pero el PDF dice {page_count}."
-                ));
-            }
-            Ok(page_count)
-        }
+        Ok(_) => normalizar_nombres_paginas(out_dir, page_count).map(|_| page_count),
     }
+}
+
+/// Renombra los PNG de `out_dir` a un esquema predecible sin padding:
+/// `page-1.png`, `page-2.png`, …, `page-N.png` (donde N == page_count).
+/// `pdftoppm` los genera con padding según la cantidad de páginas, lo cual
+/// es invisible para el usuario pero rompe cualquier código que asuma el
+/// esquema sin padding. Esta función los renombra en orden lexicográfico,
+/// que coincide con el orden de páginas.
+fn normalizar_nombres_paginas(out_dir: &Path, page_count: u32) -> Result<(), String> {
+    let mut pngs: Vec<PathBuf> = fs::read_dir(out_dir)
+        .map_err(|e| format!("No se pudo leer el directorio de páginas: {e}"))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .map(|x| x.eq_ignore_ascii_case("png"))
+                .unwrap_or(false)
+        })
+        .collect();
+    pngs.sort();
+    if pngs.len() as u32 != page_count {
+        return Err(format!(
+            "pdftoppm generó {} páginas pero el PDF dice {}.",
+            pngs.len(),
+            page_count
+        ));
+    }
+    // Renombrar a un esquema temporal primero para no pisar un destino
+    // existente al reordenar (p. ej. pasar de page-1, page-10 a page-01,
+    // page-10 sin esto sobrescribiría page-1 dos veces).
+    let tmps: Vec<PathBuf> = pngs
+        .iter()
+        .enumerate()
+        .map(|(i, old)| {
+            let tmp: PathBuf = out_dir.join(format!(".rename-{}.tmp", i + 1));
+            fs::rename(old, &tmp)
+                .map_err(|e| format!("No se pudo renombrar {}: {e}", old.display()))?;
+            Ok(tmp)
+        })
+        .collect::<Result<_, String>>()?;
+    for (i, tmp) in tmps.iter().enumerate() {
+        let destino = out_dir.join(format!("page-{}.png", i + 1));
+        fs::rename(tmp, &destino).map_err(|e| {
+            format!("No se pudo renombrar a {}: {e}", destino.display())
+        })?;
+    }
+    Ok(())
 }
 
 /// Construye la pista de audio del video (ADR-010): concatena los WAV de

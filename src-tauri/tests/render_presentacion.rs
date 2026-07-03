@@ -209,6 +209,67 @@ fn render_presentacion_e2e() {
     media_server_sirve_pagina(&PathBuf::from(&ruta_frontend));
 }
 
+/// Variante del E2E con un PDF de 12+ páginas para validar que la
+/// normalización de nombres funciona cuando `pdftoppm` aplica padding
+/// de 2 dígitos (`page-01.png`, `page-02.png`, …) en lugar de
+/// `page-1.png`. Es el caso que reportaba Nicolás en su proyecto.
+#[test]
+#[ignore]
+fn render_presentacion_pdf_muchas_paginas() {
+    if !ffmpeg_disponible() || !poppler_disponible() {
+        eprintln!("Falta ffmpeg, pdftoppm o pdfinfo; saltando.");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("demo.lqzx");
+    let _ = loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en")
+        .expect("crear proyecto");
+
+    // Genera un PDF de 12 páginas: dispara padding de 2 dígitos en pdftoppm.
+    let pdf = dir.path().join("doc.pdf");
+    let script = dir.path().join("gen_pdf.py");
+    let body = [
+        "from reportlab.pdfgen import canvas",
+        "from reportlab.lib.pagesizes import letter",
+        &format!("c = canvas.Canvas('{}', pagesize=letter)", pdf.display()),
+        "for i in range(1, 13):",
+        "    c.setFont('Helvetica-Bold', 48)",
+        "    c.drawCentredString(letter[0]/2, letter[1]/2, 'P' + str(i))",
+        "    c.showPage()",
+        "c.save()",
+        "",
+    ]
+    .join("\n");
+    std::fs::write(&script, body).unwrap();
+    let status = Command::new("python3")
+        .arg(&script)
+        .status()
+        .expect("python3 debe estar instalado");
+    assert!(status.success(), "no se pudo generar el PDF");
+
+    let _ = loquazx_lib::__test::importar_pdf(&project, &pdf).expect("importar PDF");
+
+    let pages = project.join("slides").join("pages");
+    // Tras la normalización, todas las páginas deben llamarse `page-N.png`
+    // (sin padding) independientemente de cuántas tenga el PDF.
+    for n in 1..=12 {
+        let png = pages.join(format!("page-{n}.png"));
+        assert!(
+            png.is_file(),
+            "falta la página {n} normalizada: {}",
+            png.display()
+        );
+    }
+    // Y no debe haber quedado ninguna con padding (page-01.png, page-02.png…).
+    for entry in std::fs::read_dir(&pages).unwrap().flatten() {
+        let name = entry.file_name().into_string().unwrap_or_default();
+        assert!(
+            !name.starts_with(".rename-"),
+            "quedó un staging sin renombrar: {name}"
+        );
+    }
+}
+
 /// Variante del E2E con un path que tiene espacios y acentos, que es donde
 /// sospechamos que el bug se manifiesta. Si este test pasa pero el del usuario
 /// falla, el problema es específico a su entorno (no reproducible aquí).
