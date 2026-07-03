@@ -95,29 +95,27 @@ El mp4 final va a `exports/<nombre>.mp4` (paralelo a `traduccion-solicitud.json`
 - Multi‑idioma de salida en la exportación (se sigue doblando solo al `target_language`).
 - Edición visual del `slide` arrastrando bloques en la `Timeline` (queda como mejora futura; en este PR se edita por segmento desde el `EditPanel`).
 
-## Recalibración de velocidad global de los audios
+## Recalibración de timings
 
-El modo presentación ofrece un flujo opcional de **recalibración de velocidad**: aplicar un **único factor de `atempo` a TODOS los audios doblados**, calculado para que la suma de las duraciones naturales de los audios coincida con la duración total del timeline original. El timeline manda; los audios se reproducen todos a la misma velocidad.
+El modo presentación ofrece opcionalmente un flujo de **recalibración**: dejar que la duración natural del audio sintetizado dicte los `start`/`end` de los segmentos en lugar de comprimir/estirar el audio para encajar en los timings originales (vía `atempo`, ADR-009).
 
 ### Por qué
 
-Sin recalibración, el backend ajusta cada audio individualmente con `atempo` para encajar en su `end - start` (ADR-009). El factor es distinto para cada segmento: si un audio es naturalmente el doble de largo que el hueco, se comprime 2x; si es la mitad, se estira 2x. Eso hace que la velocidad de habla varíe mucho entre segmentos, lo que suena artificial. La recalibración aplica un factor único a todos los audios, de modo que la voz se mantiene a una velocidad consistente.
+Cuando los `start`/`end` originales son aproximados (por ejemplo, calculados a mano o tomados de un video de referencia), comprimir el audio degrada la naturalidad de la voz. Un hablante natural dice cada frase a una velocidad propia; obligarlo a 1.5x o 0.7x para encajar en un hueco arbitrario se nota. La recalibración invierte la ecuación: el audio es la fuente de verdad, y los timings se ajustan a él.
 
 ### Cómo
 
 1. El usuario hace clic en **«Recalibrar»** (icono `Sliders` en la barra superior).
-2. El backend sintetiza cada segmento con texto a velocidad natural y mide la duración. Acumula la duración total.
-3. Calcula el factor: `factor = audio_natural_total / timeline_total`. Si el audio natural es más largo que el timeline (`factor > 1`), se acelera. Si es más corto (`factor < 1`), se ralentiza.
-4. Clampa el factor al rango `[FACTOR_MIN, FACTOR_MAX]` (`[0.6, 1.8]`) para que la voz no se degrade demasiado fuera de ese rango. Si se clampó, se avisa al usuario.
-5. Regenera cada audio con `atempo(factor)` + `atrim` + `apad` para que entre exactamente en su `end - start` original. El factor es global; los huecos individuales pueden quedar un poco desbalanceados (sobra audio → recortado, falta → silencio) y el render concatena y rellena huecos.
-6. NO modifica `segments.json`: el timeline original se mantiene tal cual.
-
-### Reversibilidad
-
-Es totalmente reversible sin backup: regenerar con otro factor o re-doblar manualmente (factor 1.0) sobrescribe los `runs/dub/*.wav`. No hace falta el sistema de backup/restore que se pensó en una iteración anterior: el factor es un parámetro de la síntesis, no un cambio estructural en los datos del proyecto.
+2. El backend sintetiza cada segmento con texto a velocidad natural (`synth_segment(target_secs = None)` — el WAV no se ajusta con `atempo`).
+3. Lee la duración de cada WAV natural.
+4. Calcula los nuevos `start`/`end` cumulativos con `compute_recalibrated_timings`:
+   - Los segmentos recalibrados van en orden cronológico (por `start` original) y se ponen uno tras otro con un gap fijo de `0.2s` entre ellos.
+   - Los segmentos sin texto (o cuya síntesis falló) respetan su `start` original; el cursor salta hacia adelante para acomodarlos sin solapamiento.
+5. Persiste el `segments.json` actualizado.
+6. Antes de modificar, copia `segments.json` a `segments.original.json` (solo si no existe uno). Esto da un único punto de restauración: «Restaurar timings» (icono `RotateCcw`).
 
 ### Trade-offs
 
-- El factor es único para todos los audios. Si los audios naturales son muy desiguales entre sí (uno 1s, otro 10s), un factor único no los hace encajar perfectamente con sus `end - start` originales: el más corto puede quedar con un poco de silencio y el más largo se recorta un poco. El render concatena con silencios en los gaps, así que el mp4 sigue siendo coherente.
-- Si el factor se clampó, el audio queda un poco más rápido o más lento de lo que el timeline pediría idealmente. El usuario puede volver a recalibrar con un motor distinto o ajustar el texto.
-- Si el usuario edita un texto después de recalibrar, el audio nuevo (al volver a doblar manualmente) se ajusta a su `end - start` con `atempo` individual como siempre, perdiendo el factor global. Tendrá que recalibrar de nuevo.
+- El mp4 final queda con la duración total = suma de las duraciones naturales de los audios + gaps + silencios de los segmentos sin texto. Esto es diferente del mp4 «ajustado al timeline original» que produce el render normal.
+- Si el usuario edita un texto después de recalibrar, los timings ya no coinciden con la nueva duración del audio. Tendrá que recalibrar de nuevo (o restaurar primero y doblar manualmente).
+- Los `runs/dub/*.wav` quedan a velocidad natural. El comando de doblaje individual (`Generar audio` en el `EditPanel`) sigue produciendo audio ajustado al `end - start` original, no a la duración natural.

@@ -129,16 +129,9 @@ export interface RenderReport {
   duration_secs: number;
 }
 
-/** Resultado de aplicar un factor global de velocidad a los audios (ADR-010). */
+/** Resultado de recalibrar los timings al audio natural (ADR-010). */
 export interface RecalibrationReport {
   recalibrados: number;
   fallidos: number;
-  /** Factor de atempo aplicado a TODOS los audios. >1 acelera, <1 ralentiza. */
-  factor: number;
-  /** Suma de las duraciones naturales (sin factor) de los audios recalibrados. */
-  duracion_natural_total: number;
-  /** Suma de los `end - start` originales; es la «meta» que el factor intenta igualar. */
-  duracion_timeline_total: number;
-  /** Mensaje legible para la UI: factor aplicado, o aviso de clamp. */
-  mensaje: string;
+  duracion_total: number;
 }

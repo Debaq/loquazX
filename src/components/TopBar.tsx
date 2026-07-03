@@ -14,6 +14,7 @@ import {
   FilePlus2,
   Clapperboard,
   Sliders,
+  RotateCcw,
 } from "lucide-react";
 import { LANGUAGES } from "../languages";
 
@@ -59,9 +60,7 @@ interface Props {
   renderingPresentation: boolean;
   /** Avance del render de presentación, si está corriendo. */
   renderProgress?: { etapa: number; total: number } | null;
-  /** Recalibra la velocidad de los audios aplicando un factor global de
-   * atempo, calculado para que la suma de las duraciones naturales
-   * coincida con la duración total del timeline (ADR-010). */
+  /** Recalibra los timings de los segmentos a la duración natural del audio (ADR-010). */
   onRecalibrarAudios: () => void;
   /** `true` cuando hay al menos un segmento con texto para recalibrar. */
   canRecalibrar: boolean;
@@ -69,6 +68,10 @@ interface Props {
   recalibrating: boolean;
   /** Avance de la recalibración. */
   recalProgress?: { hechos: number; total: number } | null;
+  /** Restaura los timings originales desde el backup. */
+  onRestaurarTimings: () => void;
+  /** `true` cuando existe backup de timings originales. */
+  hasTimingsBackup: boolean;
 }
 
 const ICON_SIZE = 18;
@@ -109,6 +112,8 @@ function TopBar({
   canRecalibrar,
   recalibrating,
   recalProgress,
+  onRestaurarTimings,
+  hasTimingsBackup,
 }: Props) {
   return (
     <header className="topbar">
@@ -358,6 +363,18 @@ function TopBar({
           )}
           <span>Recalibrar</span>
         </button>
+        {hasTimingsBackup && (
+          <button
+            type="button"
+            className="topbar__btn"
+            onClick={onRestaurarTimings}
+            disabled={recalibrating || renderingPresentation}
+            title="Restaura los start/end originales (antes de la última recalibración)"
+            aria-label="Restaurar timings originales"
+          >
+            <RotateCcw size={ICON_SIZE} />
+          </button>
+        )}
       </div>
     </header>
   );

@@ -120,36 +120,6 @@ pub fn ffmpeg_missing_message() -> String {
         .to_string()
 }
 
-/// Aplica `filter` (cadena de filtros de audio de ffmpeg) al WAV `input` y
-/// escribe el resultado en `output`. Útil para encadenar `atempo` con
-/// `atrim`/`apad` en una sola pasada. Reusado por `tts::synth_segment` para
-/// la recalibración de velocidad global (ADR-010).
-pub fn run_ffmpeg_filter(
-    input: &Path,
-    output: &Path,
-    filter: &str,
-    accion: &str,
-) -> Result<(), String> {
-    let result = Command::new("ffmpeg")
-        .args(["-y", "-i"])
-        .arg(input.as_os_str())
-        .args(["-filter:a", filter, "-c:a", "pcm_s16le"])
-        .arg(output.as_os_str())
-        .output();
-    let salida = match result {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ffmpeg_missing_message()),
-        Err(e) => return Err(format!("No se pudo ejecutar ffmpeg: {e}")),
-        Ok(s) => s,
-    };
-    if !salida.status.success() {
-        let stderr = String::from_utf8_lossy(&salida.stderr);
-        let cola: Vec<&str> = stderr.lines().rev().take(5).collect();
-        let cola: Vec<&str> = cola.into_iter().rev().collect();
-        return Err(format!("ffmpeg falló al {accion}:\n{}", cola.join("\n")));
-    }
-    Ok(())
-}
-
 /// Corre ffmpeg con `args`, traduciendo la ausencia del binario y los fallos a
 /// mensajes en español. `accion` describe la tarea para el mensaje de error.
 fn run_ffmpeg(args: &[&OsStr], accion: &str) -> Result<(), String> {
