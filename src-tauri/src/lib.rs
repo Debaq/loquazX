@@ -2,6 +2,7 @@ mod audio;
 mod download;
 mod media_server;
 mod models;
+mod presentacion;
 mod project;
 mod transcribe;
 mod translate_engine;
@@ -365,6 +366,123 @@ async fn generar_doblaje_segmento(
     server.url_for(&wav)
 }
 
+// ADR-010: lee el conteo de páginas de un PDF sin importarlo al proyecto.
+// Sirve para validar la UI antes de aceptar el archivo.
+#[tauri::command]
+fn conteo_paginas_pdf(pdf: String) -> Result<u32, String> {
+    presentacion::conteo_paginas_pdf(std::path::Path::new(&pdf))
+}
+
+// ADR-010: importa un PDF de fondo al proyecto, lo copia bajo `slides/` y
+// persiste el conteo de páginas en el manifiesto.
+#[tauri::command]
+fn importar_pdf(path: String, pdf: String) -> Result<Project, String> {
+    project::import_pdf(&PathBuf::from(path), &PathBuf::from(pdf))
+}
+
+// ADR-010: importa un audio arbitrario como `manifest.audio`. Pensado para el
+// modo presentación cuando no hay video del cual extraer audio.
+#[tauri::command]
+async fn importar_audio_presentacion(path: String, audio: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::import_audio_presentation(&PathBuf::from(path), &PathBuf::from(audio))
+    })
+    .await
+    .map_err(|e| format!("La importación del audio se interrumpió: {e}"))?
+}
+
+// ADR-010: importa segmentos desde un JSON externo `{start, end, slide, source}`.
+// Sobrescribe los segmentos existentes; la UI confirma antes.
+#[tauri::command]
+fn importar_segmentos_json(path: String, json: String) -> Result<Project, String> {
+    let dir = PathBuf::from(&path);
+    let manifest: project::Manifest = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("project.json"))
+            .map_err(|e| format!("No se pudo leer el manifiesto: {e}"))?,
+    )
+    .map_err(|e| format!("Manifiesto inválido: {e}"))?;
+    let page_count = manifest.slides.as_ref().map(|s| s.page_count);
+    project::import_segments_json(&dir, &PathBuf::from(json), page_count)
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ProgresoPresentacion {
+    etapa: usize,
+    total: usize,
+}
+
+// ADR-010: rasteriza el PDF, concatena el audio doblado y compone el mp4
+// final. Asume que el usuario ya tradujo y dobló los segmentos. Asíncrono:
+// puede tardar varios segundos y no debe congelar el hilo principal.
+#[tauri::command]
+async fn renderizar_presentacion(
+    window: tauri::Window,
+    path: String,
+) -> Result<project::RenderReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::render_presentation(&PathBuf::from(path), |etapa, total| {
+            let _ = window.emit(
+                "presentacion:progreso",
+                ProgresoPresentacion { etapa, total },
+            );
+        })
+    })
+    .await
+    .map_err(|e| format!("El render de la presentación se interrumpió: {e}"))?
+}
+
+/// Shims públicos para tests de integración que necesitan tocar el pipeline
+/// interno sin pasar por la UI ni por `tauri::test`. Marcados con el prefijo
+/// `__test_` para que sea evidente que no son parte de la API de cara al
+/// usuario; cualquier uso desde la app es un bug.
+#[doc(hidden)]
+pub mod __test {
+    use std::path::{Path, PathBuf};
+
+    pub use super::project::{Presentation, Segment};
+
+    pub fn crear_proyecto(
+        path: &Path,
+        nombre: &str,
+        origen: &str,
+        destino: &str,
+    ) -> Result<super::project::Project, String> {
+        super::project::create(path, nombre, origen, destino)
+    }
+
+    pub fn importar_pdf(path: &Path, pdf: &Path) -> Result<super::project::Project, String> {
+        super::project::import_pdf(path, pdf)
+    }
+
+    pub fn importar_segmentos_json(
+        path: &Path,
+        json: &Path,
+    ) -> Result<super::project::Project, String> {
+        let manifest: super::project::Manifest = serde_json::from_str(
+            &std::fs::read_to_string(path.join("project.json"))
+                .map_err(|e| format!("no se pudo leer el manifiesto: {e}"))?,
+        )
+        .map_err(|e| format!("manifiesto inválido: {e}"))?;
+        let page_count = manifest.slides.as_ref().map(|s| s.page_count);
+        super::project::import_segments_json(path, json, page_count)
+    }
+
+    pub fn load_segments(path: &Path) -> Result<Vec<Segment>, String> {
+        super::project::load_segments(path)
+    }
+
+    pub fn render_presentacion(
+        path: &Path,
+        on_progress: impl Fn(usize, usize),
+    ) -> Result<super::project::RenderReport, String> {
+        super::project::render_presentation(path, on_progress)
+    }
+
+    pub fn path_buf(p: &str) -> PathBuf {
+        PathBuf::from(p)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Fija el proveedor criptográfico de rustls: con aws-lc-rs y ring presentes
@@ -404,6 +522,11 @@ pub fn run() {
             probar_voz_edge,
             generar_doblaje,
             generar_doblaje_segmento,
+            conteo_paginas_pdf,
+            importar_pdf,
+            importar_audio_presentacion,
+            importar_segmentos_json,
+            renderizar_presentacion,
             forma_onda,
             url_media
         ])
