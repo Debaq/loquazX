@@ -90,9 +90,17 @@ fn render_presentacion_e2e() {
         std::fs::create_dir_all(project.join(sub)).unwrap();
     }
 
-    // Importa el PDF usando el comando Tauri vía el módulo público.
+    // Importa el PDF usando el comando Tauri vía el módulo público. Esto
+    // también rasteriza las páginas bajo `slides/pages/`, que es lo que usa
+    // tanto el preview como el render final.
     let pdf = generar_pdf(dir.path());
     let _ = loquazx_lib::__test::importar_pdf(&project, &pdf).expect("importar PDF");
+
+    // Verifica que las páginas se rasterizaron al importar.
+    for n in 1..=3 {
+        let png = project.join("slides").join("pages").join(format!("page-{n}.png"));
+        assert!(png.is_file(), "falta la página rasterizada: {}", png.display());
+    }
 
     // Importa los segmentos.
     let json = dir.path().join("segs.json");

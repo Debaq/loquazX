@@ -53,7 +53,7 @@ Ausente en proyectos previos: el campo es `#[serde(default, skip_serializing_if 
 
 Nuevo módulo `presentacion.rs`:
 
-- `rasterizar_pdf(pdf, out_dir) -> Result<u32>` invoca `pdftoppm -r 150 -png <pdf> <out_dir>/page`; devuelve `page_count`. Si `pdftoppm` no está en `PATH`, error explícito (mismo principio que ADR-003 para `ffmpeg`).
+- `rasterizar_pdf(pdf, out_dir) -> Result<u32>` invoca `pdftoppm -r 300 -png <pdf> <out_dir>/page`; devuelve `page_count`. Se llama **al importar** el PDF (no al renderizar), para que el preview de la UI y el render final usen las mismas imágenes pre-generadas en `slides/pages/`. 300 DPI garantiza nitidez en Full HD y superior sin saltos visibles al proyectar. Si `pdftoppm` no está en `PATH`, error explícito (mismo principio que ADR-003 para `ffmpeg`).
 - `calcular_pista_audio(segments, dub_dir, total_dur) -> PathBuf` concatena los `runs/dub/<id>.wav` con `ffmpeg` y el demuxer `concat`, insertando silencio (`anullsrc`) en los huecos entre segmentos para que la duración total coincida con la del último `end` (o el mayor entre `end` y `page_count * dur_por_pagina`, lo que sea mayor).
 - `calcular_timeline_imagenes(segments, page_count, total_dur)` arma el `concat.txt` de ffmpeg con `-loop 1 -t <dur> -i page_N.png` por cada bloque entre cambios de `slide`. Si ningún segmento tiene `slide`, todo el video usa la página 1.
 - `render(...)`: pipeline `ffmpeg -f concat -safe 0 -i imgs.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -shortest -movflags +faststart out.mp4`. `-movflags +faststart` para que el mp4 abra rápido al servirse por el `MediaServer` (ADR-005).
@@ -84,6 +84,8 @@ El mp4 final va a `exports/<nombre>.mp4` (paralelo a `traduccion-solicitud.json`
 - `Segment` cambia de esquema; los proyectos previos no se rompen por el `#[serde(default)]`.
 - El render de presentación convive con el flujo de video, pero en esta versión no se mezclan: si el proyecto tiene `source`, se usa la ruta de exportación existente (futuro); si tiene `slides` solamente, se ofrece el render de presentación. La coexistencia mixta se documenta como limitación.
 - Los WAV de doblaje se reusan tal cual: el modo presentación no requiere regenerar audio.
+- Las páginas del PDF se rasterizan una sola vez al importar y se sirven por el `MediaServer` local (ADR-005) tanto para el preview como para el render final. Esto simplifica el render (no depende de `pdftoppm`) y garantiza coherencia visual entre lo que se ve y lo que se exporta. Si el usuario manipula el proyecto a mano y borra las imágenes, el render falla con un mensaje claro que sugiere reimportar.
+- Las imágenes a 300 DPI ocupan ~3–4 MB por página; un proyecto de 50 páginas pesa ~150–200 MB adicionales, aceptable para un proyecto autocontenido.
 - Los tests que rasterizan PDF o invocan ffmpeg se saltean si la dependencia no está, mismo patrón que `extract_audio` (ADR-003).
 
 ## Fuera de alcance

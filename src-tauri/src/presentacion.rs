@@ -42,9 +42,11 @@ pub fn conteo_paginas_pdf(pdf: &Path) -> Result<u32, String> {
     Err("pdfinfo no reportó el conteo de páginas.".to_string())
 }
 
-/// Rasteriza el PDF a PNG en `out_dir` con `pdftoppm` (poppler). Devuelve el
-/// conteo de páginas leídas con `conteo_paginas_pdf`. Los archivos se nombran
-/// `page-1.png`, `page-2.png`, … con padding según la cantidad de dígitos.
+/// Rasteriza el PDF a PNG en `out_dir` con `pdftoppm` (poppler) a 300 DPI:
+/// alta calidad para Full HD y superior, sin saltos visibles al proyectar
+/// (ADR-010). Devuelve el conteo de páginas leídas con `conteo_paginas_pdf`.
+/// Los archivos se nombran `page-1.png`, `page-2.png`, … con padding según
+/// la cantidad de dígitos.
 pub fn rasterizar_pdf(pdf: &Path, out_dir: &Path) -> Result<u32, String> {
     let page_count = conteo_paginas_pdf(pdf)?;
     fs::create_dir_all(out_dir)
@@ -52,7 +54,7 @@ pub fn rasterizar_pdf(pdf: &Path, out_dir: &Path) -> Result<u32, String> {
 
     let prefijo = out_dir.join("page");
     let status = Command::new("pdftoppm")
-        .args(["-r", "150", "-png"])
+        .args(["-r", "300", "-png"])
         .arg(pdf)
         .arg(&prefijo)
         .status();

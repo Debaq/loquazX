@@ -572,7 +572,7 @@ function App() {
   async function renderizarPresentacion() {
     if (!project) return;
     setRenderingPresentation(true);
-    setRenderProgress({ etapa: 0, total: 3 });
+    setRenderProgress({ etapa: 0, total: 2 });
     const desuscribir = await listen<{ etapa: number; total: number }>(
       "presentacion:progreso",
       (e) => setRenderProgress({ etapa: e.payload.etapa, total: e.payload.total }),

@@ -72,7 +72,12 @@ function VideoPreview({
     const pngPath = `${projectPath}/slides/pages/page-${page}.png`;
     invoke<string>("url_media", { path: pngPath })
       .then(setSlideSrc)
-      .catch((e) => setSlideError(String(e)));
+      .catch((e) =>
+        setSlideError(
+          `No se pudo cargar la página ${page}: ${e}\n\nSi el proyecto es de una versión \
+anterior, vuelve a importar el PDF para regenerar las imágenes.`,
+        ),
+      );
   }, [videoPath, slidesPath, projectPath, slidesPageCount, page]);
 
   if (videoPath) {

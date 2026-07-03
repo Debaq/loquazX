@@ -563,9 +563,14 @@ pub fn generate_dub_segment(
 }
 
 /// Importa un PDF como fondo del modo presentación (ADR-010). Copia el archivo
-/// al proyecto bajo `slides/` y persiste el conteo de páginas en el manifiesto.
-/// Si ya había un PDF, lo reemplaza (los segmentos previos conservan su `slide`,
-/// que se validará al renderizar).
+/// al proyecto bajo `slides/`, persiste el conteo de páginas en el manifiesto
+/// y rasteriza cada página a `slides/pages/page-N.png` con `pdftoppm` para
+/// que estén disponibles de inmediato tanto en el preview como en el render
+/// final (que ya no necesita volver a rasterizar).
+///
+/// Si ya había un PDF, las páginas viejas se descartan y los segmentos
+/// previos conservan su `slide`, que se acota contra el nuevo `page_count`
+/// al renderizar.
 pub fn import_pdf(path: &Path, pdf: &Path) -> Result<Project, String> {
     if !pdf.is_file() {
         return Err(format!("El PDF no existe: {}", pdf.display()));
@@ -586,6 +591,13 @@ pub fn import_pdf(path: &Path, pdf: &Path) -> Result<Project, String> {
     let slides_dir = path.join("slides");
     fs::create_dir_all(&slides_dir)
         .map_err(|e| format!("No se pudo crear el directorio slides: {e}"))?;
+    // Borra páginas viejas (de un PDF anterior) para que `page-N.png` siempre
+    // corresponda al PDF vigente. Si no había directorio, no es un error.
+    let pages_dir = slides_dir.join("pages");
+    if pages_dir.exists() {
+        fs::remove_dir_all(&pages_dir)
+            .map_err(|e| format!("No se pudo limpiar el directorio de páginas: {e}"))?;
+    }
     let name = pdf
         .file_name()
         .ok_or_else(|| format!("Ruta de PDF inválida: {}", pdf.display()))?;
@@ -600,6 +612,11 @@ pub fn import_pdf(path: &Path, pdf: &Path) -> Result<Project, String> {
         imported_at: unix_now()?,
     });
     write_json(&path.join("project.json"), &manifest)?;
+
+    // Rasteriza cada página del PDF. Si esto falla, el proyecto queda con el
+    // PDF persistido pero sin páginas, y el preview/render no funcionarán;
+    // devolvemos el error para que la UI lo muestre y el usuario decida.
+    crate::presentacion::rasterizar_pdf(&destination, &pages_dir)?;
 
     let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
         .unwrap_or_default()
@@ -727,10 +744,11 @@ pub struct RenderReport {
     pub duration_secs: f64,
 }
 
-/// Renderiza el video de presentación: rasteriza el PDF, concatena los WAV de
-/// doblaje con silencios y produce el mp4 final (ADR-010). Asume que el usuario
-/// ya tradujo y dobló los segmentos. Emite `on_progress(hechos, total)` por
-/// cada etapa (rasterizado, audio, video).
+/// Renderiza el video de presentación: concatena los WAV de doblaje con
+/// silencios y compone el mp4 final (ADR-010). Las páginas del PDF ya están
+/// rasterizadas bajo `slides/pages/` desde el import, así que el render no
+/// depende de `pdftoppm`. Asume que el usuario ya tradujo y dobló los
+/// segmentos. Emite `on_progress(hechos, total)` por cada etapa (audio, video).
 pub fn render_presentation(
     path: &Path,
     on_progress: impl Fn(usize, usize),
@@ -741,11 +759,10 @@ pub fn render_presentation(
         .slides
         .as_ref()
         .ok_or_else(|| "El proyecto no tiene un PDF importado.".to_string())?;
-    let pdf_abs = path.join(&slides.file);
-    if !pdf_abs.is_file() {
+    if !path.join(&slides.file).is_file() {
         return Err(format!(
             "El PDF del proyecto no existe: {}",
-            pdf_abs.display()
+            path.join(&slides.file).display()
         ));
     }
 
@@ -754,19 +771,23 @@ pub fn render_presentation(
         return Err("No hay segmentos en el proyecto.".to_string());
     }
     let page_count = slides.page_count;
-
-    on_progress(0, 3);
-    // 1) Rasteriza el PDF.
     let pages_dir = path.join("slides").join("pages");
-    crate::presentacion::rasterizar_pdf(&pdf_abs, &pages_dir)?;
-    on_progress(1, 3);
+    // Verificación defensiva: si el proyecto fue manipulado a mano y faltan
+    // las imágenes, no se puede renderizar. La rasterización ocurre al
+    // importar; reimportar el PDF la regenera.
+    if !pages_dir.join("page-1.png").is_file() {
+        return Err(
+            "Faltan las imágenes de las páginas del PDF. Vuelve a importar el PDF.".to_string(),
+        );
+    }
 
-    // 2) Construye la pista de audio a partir de los WAV de doblaje.
+    on_progress(0, 2);
+    // 1) Construye la pista de audio a partir de los WAV de doblaje.
     let audio_out = path.join("slides").join("audio.wav");
     crate::presentacion::concatenar_audio_doblaje(&segments, path, &audio_out)?;
-    on_progress(2, 3);
+    on_progress(1, 2);
 
-    // 3) Compone el mp4 final.
+    // 2) Compone el mp4 final.
     let exports_dir = path.join("exports");
     fs::create_dir_all(&exports_dir)
         .map_err(|e| format!("No se pudo crear el directorio exports: {e}"))?;
@@ -774,7 +795,7 @@ pub fn render_presentation(
     let output = exports_dir.join(format!("{project_name}.mp4"));
     let duration =
         crate::presentacion::componer_mp4(&pages_dir, page_count, &segments, &audio_out, &output)?;
-    on_progress(3, 3);
+    on_progress(2, 2);
 
     Ok(RenderReport {
         output: output.display().to_string(),
