@@ -566,6 +566,7 @@ pub fn generate_dub(
             settings,
             &texto,
             models_dir,
+            None,
             Some(target),
             &dub_path(path, &segment.id),
         )?;
@@ -600,7 +601,7 @@ pub fn generate_dub_segment(
         .ok_or_else(|| "El segmento no tiene texto ni traducción que doblar.".to_string())?;
     let out = dub_path(path, seg_id);
     let target = (segment.end - segment.start).max(0.0);
-    crate::tts::synth_segment(settings, &texto, models_dir, Some(target), &out)?;
+    crate::tts::synth_segment(settings, &texto, models_dir, None, Some(target), &out)?;
     Ok(out)
 }
 
@@ -919,6 +920,7 @@ pub fn render_presentation(
             settings,
             &texto,
             models_dir,
+            None,
             Some(target),
             &dub_path(path, &s.id),
         )?;
@@ -946,87 +948,77 @@ pub fn render_presentation(
     })
 }
 
-/// Resultado de recalibrar los timings de los segmentos al audio natural.
+/// Resultado de recalibrar la velocidad de los audios a un factor global
+/// (ADR-010).
 #[derive(Debug, Serialize)]
 pub struct RecalibrationReport {
-    /// Segmentos que se recalibraron (con texto, se sintetizó y se les asignó
-    /// la duración natural del audio).
+    /// Cantidad de segmentos con texto a los que se les regeneró el audio.
     pub recalibrados: usize,
-    /// Segmentos sin texto o cuya síntesis falló: mantienen su `start`/`end`
-    /// original y quedan como silencios en el render.
+    /// Cantidad de segmentos sin texto o con síntesis fallida.
     pub fallidos: usize,
-    /// Duración total del nuevo `segments.json` (suma de `end` del último + gap).
-    pub duracion_total: f64,
+    /// Factor de atempo aplicado a TODOS los audios (>1 acelera, <1
+    /// ralentiza). El mismo para todos los segmentos, no por segmento.
+    pub factor: f64,
+    /// Suma de las duraciones naturales (sin factor) de los audios de los
+    /// segmentos recalibrados, en segundos.
+    pub duracion_natural_total: f64,
+    /// Suma de los `end - start` originales (la «meta» del timeline), en
+    /// segundos. Equivale a la duración total del timeline cuando los
+    /// segmentos se concatenan sin gaps.
+    pub duracion_timeline_total: f64,
+    /// Mensaje legible para mostrar en la UI, útil cuando el factor se
+    /// clampó o se rechazó por estar fuera de rango.
+    pub mensaje: String,
 }
 
-/// Gap por defecto entre segmentos consecutivos al recalibrar, en segundos.
-/// Suficiente para una respiración natural entre frases.
-pub const RECALIBRATION_GAP_SECS: f64 = 0.2;
+/// Rango aceptable del factor global de atempo. `atempo` de ffmpeg acepta
+/// cada filtro individual en `[0.5, 2.0]` y se puede encadenar; acá
+/// dejamos un margen cómodo para que la voz no se degrade demasiado.
+pub const FACTOR_MIN: f64 = 0.6;
+pub const FACTOR_MAX: f64 = 1.8;
 
-/// Calcula los nuevos `start`/`end` a partir de los segmentos originales y
-/// las duraciones naturales medidas. Lógica pura, separada de la
-/// orquestación de TTS para que sea testeable de forma determinista.
+/// Calcula el factor de atempo global que iguala la duración total del
+/// timeline con la suma de las duraciones naturales de los audios.
 ///
-/// `duraciones_naturales` mapea `segment.id -> duración en segundos` para
-/// los segmentos que se recalibraron. Los segmentos sin entrada en el mapa
-/// (sin texto o síntesis fallida) respetan su `start` original
-/// (silencio de esa duración), saltando el cursor si hace falta.
+/// `factor = audio_natural_total / timeline_total`
 ///
-/// Comportamiento:
-/// 1. Ordena por `start` original (cronológico).
-/// 2. Recalibrados: ocupan `cursor` cumulativamente (el audio dicta la
-///    duración; el `start` original se ignora dentro del cluster).
-/// 3. No recalibrados: si el cursor está antes de su `start` original,
-///    salta; respeta su `end - start` (duración del silencio).
-/// 4. Aplica `gap_secs` entre cada par consecutivo.
-pub fn compute_recalibrated_timings(
-    segments: &[Segment],
-    duraciones_naturales: &std::collections::HashMap<String, f64>,
-    gap_secs: f64,
-) -> Vec<Segment> {
-    let mut ordenados: Vec<Segment> = segments.to_vec();
-    ordenados.sort_by(|a, b| {
-        a.start
-            .partial_cmp(&b.start)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let mut result: Vec<Segment> = Vec::with_capacity(ordenados.len());
-    let mut cursor = 0.0_f64;
-    for s in ordenados {
-        if let Some(&dur_natural) = duraciones_naturales.get(&s.id) {
-            // Recalibrado: orden cumulativo, sin importar el start original.
-            result.push(Segment {
-                start: cursor,
-                end: cursor + dur_natural,
-                ..s
-            });
-            cursor += dur_natural + gap_secs;
-        } else {
-            // No recalibrado: respeta su start (cursor salta si hace falta) y
-            // su duración.
-            if cursor < s.start {
-                cursor = s.start;
-            }
-            let duracion = (s.end - s.start).max(0.0);
-            result.push(Segment {
-                start: cursor,
-                end: cursor + duracion,
-                ..s
-            });
-            cursor += duracion + gap_secs;
-        }
+/// - `factor > 1` → los audios son más largos que el timeline: se aceleran.
+/// - `factor < 1` → los audios son más cortos: se ralentizan.
+/// - `factor == 1` → el audio natural ya encaja con el timeline.
+///
+/// Devuelve el factor ya clampado a `[FACTOR_MIN, FACTOR_MAX]`. Si el
+/// `audio_natural_total` es 0 o el timeline está vacío, devuelve 1.0.
+pub fn compute_global_speedup_factor(
+    audio_natural_total: f64,
+    timeline_total: f64,
+) -> f64 {
+    if !audio_natural_total.is_finite()
+        || !timeline_total.is_finite()
+        || audio_natural_total <= 0.0
+        || timeline_total <= 0.0
+    {
+        return 1.0;
     }
-    result
+    let factor = audio_natural_total / timeline_total;
+    factor.clamp(FACTOR_MIN, FACTOR_MAX)
 }
 
-/// Recalibra los timings de los segmentos a la duración natural del audio
-/// sintetizado (ADR-010). Útil cuando los `start`/`end` originales eran
-/// aproximados: deja que el audio dicte la duración de cada segmento y los
-/// reordena cumulativamente, con un gap fijo entre ellos. Los segmentos sin
-/// texto respetan su `start`/`end` original (quedan como silencios de esa
-/// duración). Antes de modificar, hace un backup de `segments.json` en
-/// `segments.original.json` si no existe uno.
+/// Recalibra la velocidad de los audios del modo presentación (ADR-010).
+/// Aplica un ÚNICO factor de `atempo` a TODOS los audios doblados,
+/// calculado para que la suma de las duraciones naturales de los audios
+/// coincida con la duración total del timeline original. El factor es
+/// común (no por segmento) y se clampa a `[FACTOR_MIN, FACTOR_MAX]` para
+/// que la voz no se degrade demasiado.
+///
+/// El efecto: cada audio se reproduce a la misma velocidad. Si los audios
+/// eran naturalmente más largos que los huecos, todos se aceleran; si
+/// eran más cortos, todos se ralentizan. Los `start`/`end` de los
+/// segmentos NO se tocan: el timeline manda. Si el factor está fuera del
+/// rango cómodo, se clampa y se reporta en el mensaje del reporte.
+///
+/// Es reversible: regenerar con otro factor o volver a doblar
+/// manualmente (factor 1.0) sobrescribe los WAVs. No toca `segments.json`
+/// ni necesita backup.
 pub fn recalibrate_segments(
     path: &Path,
     models_dir: &Path,
@@ -1041,35 +1033,37 @@ pub fn recalibrate_segments(
                 .to_string(),
         );
     }
-    let segments_path = path.join("segments.json");
-    let backup_path = path.join("segments.original.json");
-
-    // Backup único: si ya existe, no se sobrescribe (la primera recalibración
-    // manda; llamadas subsiguientes son idempotentes).
-    if !backup_path.exists() {
-        fs::copy(&segments_path, &backup_path)
-            .map_err(|e| format!("No se pudo hacer backup de segments.json: {e}"))?;
-    }
 
     let segments_original = load_segments(path)?;
     if segments_original.is_empty() {
         return Err("No hay segmentos para recalibrar.".to_string());
     }
 
+    // Duración total del timeline (la «meta»): suma de los `end - start` de
+    // los segmentos. Si el usuario no dejó gaps ni silencios entre
+    // segmentos, esto coincide con el `end` del último.
+    let timeline_total: f64 = segments_original
+        .iter()
+        .map(|s| (s.end - s.start).max(0.0))
+        .sum();
+
     let total = segments_original.len();
     on_progress(0, total);
 
-    // Sintetiza cada segmento con texto a velocidad natural y mide la
-    // duración. Los que fallen se cuentan en `fallidos` y mantienen sus
-    // timings originales.
-    let mut duraciones = std::collections::HashMap::new();
+    // Primera pasada: sintetiza cada segmento con texto a velocidad
+    // natural (sin atempo) y mide la duración. Acumula para calcular el
+    // factor global después.
+    let mut duraciones_naturales: std::collections::HashMap<String, f64> =
+        std::collections::HashMap::new();
+    let mut audio_natural_total: f64 = 0.0;
     let mut recalibrados = 0usize;
     let mut fallidos = 0usize;
     for (i, s) in segments_original.iter().enumerate() {
         if let Some(texto) = texto_a_doblar(s) {
             match synth_natural_duration(s, settings, &texto, models_dir) {
                 Ok(dur) => {
-                    duraciones.insert(s.id.clone(), dur);
+                    duraciones_naturales.insert(s.id.clone(), dur);
+                    audio_natural_total += dur;
                     recalibrados += 1;
                 }
                 Err(e) => {
@@ -1086,22 +1080,60 @@ pub fn recalibrate_segments(
         on_progress(i + 1, total);
     }
 
-    let reordenados =
-        compute_recalibrated_timings(&segments_original, &duraciones, RECALIBRATION_GAP_SECS);
+    let factor_sin_clamp = if timeline_total > 0.0 {
+        audio_natural_total / timeline_total
+    } else {
+        1.0
+    };
+    let factor = compute_global_speedup_factor(audio_natural_total, timeline_total);
+    let mensaje = if (factor_sin_clamp - factor).abs() > 1e-6 {
+        format!(
+            "Factor ideal {:.2}x estaba fuera del rango [{:.2}, {:.2}]; se aplicó {:.2}x.",
+            factor_sin_clamp, FACTOR_MIN, FACTOR_MAX, factor
+        )
+    } else {
+        format!("Factor aplicado: {:.2}x (todos los audios a esta velocidad).", factor)
+    };
 
-    write_json(&segments_path, &SegmentsFile { segments: reordenados })?;
+    eprintln!(
+        "[loquazX] recalibrar: factor={:.3} audio_natural={:.2}s timeline={:.2}s",
+        factor, audio_natural_total, timeline_total
+    );
 
-    // El `existing_dubs` no cambia (los WAVs siguen donde están).
-    let proyecto = build_project(path, manifest, load_segments(path)?);
+    // Segunda pasada: regenera el audio de cada segmento con texto
+    // aplicando `atempo(factor)` y ajusta al `end - start` del segmento con
+    // `fit_duration`. El factor es global; el fit_duration compensa el
+    // desbalance entre el audio modificado y el hueco (algunos van a
+    // quedar un poco más cortos o largos que el hueco, eso es inevitable
+    // con un factor único y se traduce en silencios u overshoots que el
+    // render ya maneja).
+    on_progress(0, total);
+    for (i, s) in segments_original.iter().enumerate() {
+        if let Some(texto) = texto_a_doblar(s) {
+            let target = (s.end - s.start).max(0.0);
+            crate::tts::synth_segment(
+                settings,
+                &texto,
+                models_dir,
+                Some(factor),
+                Some(target),
+                &dub_path(path, &s.id),
+            )?;
+        }
+        on_progress(i + 1, total);
+    }
+
+    // El `segments.json` no se toca. El `existing_dubs` no cambia (los
+    // WAVs siguen donde están, solo se regeneran).
+    let _proyecto = build_project(path, manifest, load_segments(path)?);
 
     Ok(RecalibrationReport {
         recalibrados,
         fallidos,
-        duracion_total: proyecto
-            .segments
-            .last()
-            .map(|s| s.end)
-            .unwrap_or(0.0),
+        factor,
+        duracion_natural_total: audio_natural_total,
+        duracion_timeline_total: timeline_total,
+        mensaje,
     })
 }
 
@@ -1112,48 +1144,16 @@ fn synth_natural_duration(
     texto: &str,
     models_dir: &Path,
 ) -> Result<f64, String> {
-    // WAV temporal: usamos un nombre en el dir del proyecto para que el
-    // comando de Piper pueda escribir sus configs `.onnx.json` adyacentes
-    // sin problemas. Se borra al terminar.
     let tmp_dir = models_dir
         .parent()
         .unwrap_or(models_dir)
         .join("__tmp_recal__");
     fs::create_dir_all(&tmp_dir).ok();
     let wav = tmp_dir.join(format!("{}.wav", segment.id));
-    crate::tts::synth_segment(settings, texto, models_dir, None, &wav)?;
+    crate::tts::synth_segment(settings, texto, models_dir, None, None, &wav)?;
     let dur = crate::audio::wav_duration(&wav)?;
     let _ = std::fs::remove_file(&wav);
     Ok(dur)
-}
-
-/// Restaura los `start`/`end` originales desde el backup `segments.original.json`.
-/// Devuelve el `Project` actualizado. Los `runs/dub/*.wav` no se tocan: si
-/// el usuario quiere volver a doblar con los timings viejos, regenera el
-/// doblaje manualmente.
-pub fn restore_original_timings(path: &Path) -> Result<Project, String> {
-    if !path.join("project.json").is_file() {
-        return Err(format!(
-            "No es una carpeta de proyecto loquazX válida: {}",
-            path.display()
-        ));
-    }
-    let backup = path.join("segments.original.json");
-    if !backup.is_file() {
-        return Err("No hay backup de timings originales para restaurar.".to_string());
-    }
-    let manifest: Manifest = read_json(&path.join("project.json"))
-        .map_err(|e| format!("No se pudo leer el manifiesto: {e}"))?;
-    fs::copy(&backup, path.join("segments.json"))
-        .map_err(|e| format!("No se pudo restaurar segments.json: {e}"))?;
-    let segments = load_segments(path)?;
-    Ok(build_project(path, manifest, segments))
-}
-
-/// Indica si existe un backup de timings originales (para que la UI muestre
-/// el botón "Restaurar timings" solo cuando corresponde).
-pub fn has_original_timings_backup(path: &Path) -> bool {
-    path.join("segments.original.json").is_file()
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
@@ -1484,99 +1484,44 @@ mod tests {
         assert!(proyecto.video_path.is_none());
     }
 
-    fn seg(id: &str, start: f64, end: f64, src: &str, tra: &str) -> Segment {
-        Segment {
-            id: id.into(),
-            start,
-            end,
-            source: src.into(),
-            translation: tra.into(),
-            slide: None,
-        }
+    #[test]
+    fn factor_acelera_cuando_audio_supera_timeline() {
+        // Audio natural total = 30s, timeline = 20s → factor 1.5x (acelera).
+        let f = compute_global_speedup_factor(30.0, 20.0);
+        assert!((f - 1.5).abs() < 1e-9, "factor esperado 1.5, got {f}");
     }
 
     #[test]
-    fn compute_recalibrated_timings_todos_con_texto() {
-        use std::collections::HashMap;
-        let s1 = seg("a", 0.0, 5.0, "Hola", "Hello");
-        let s2 = seg("b", 5.0, 10.0, "Mundo", "World");
-        let s3 = seg("c", 10.0, 15.0, "Adios", "Bye");
-        let segments = vec![s1.clone(), s2.clone(), s3.clone()];
-
-        let mut durs = HashMap::new();
-        durs.insert("a".into(), 1.5);
-        durs.insert("b".into(), 2.0);
-        durs.insert("c".into(), 1.0);
-
-        let gap = 0.2;
-        let result = compute_recalibrated_timings(&segments, &durs, gap);
-
-        // a: 0.0 .. 1.5, cursor = 1.7
-        // b: 1.7 .. 3.7, cursor = 3.9
-        // c: 3.9 .. 4.9
-        assert_eq!(result.len(), 3);
-        assert!((result[0].start - 0.0).abs() < 1e-9);
-        assert!((result[0].end - 1.5).abs() < 1e-9);
-        assert!((result[1].start - 1.7).abs() < 1e-9);
-        assert!((result[1].end - 3.7).abs() < 1e-9);
-        assert!((result[2].start - 3.9).abs() < 1e-9);
-        assert!((result[2].end - 4.9).abs() < 1e-9);
+    fn factor_ralentiza_cuando_audio_es_mas_corto_que_timeline() {
+        // Audio natural total = 15s, timeline = 20s → factor 0.75x (ralentiza).
+        let f = compute_global_speedup_factor(15.0, 20.0);
+        assert!((f - 0.75).abs() < 1e-9, "factor esperado 0.75, got {f}");
     }
 
     #[test]
-    fn compute_recalibrated_timings_sin_texto_respeta_original() {
-        use std::collections::HashMap;
-        // Segmento 1: con texto, recalibrado.
-        // Segmento 2: sin texto, respeta start/end (silencio).
-        // Segmento 3: con texto, recalibrado.
-        let s1 = seg("a", 0.0, 5.0, "Hola", "Hello");
-        let s2 = seg("b", 6.0, 8.0, "Pause", "");
-        let s3 = seg("c", 10.0, 12.0, "Fin", "End");
-        let segments = vec![s1.clone(), s2.clone(), s3.clone()];
-
-        let mut durs = HashMap::new();
-        durs.insert("a".into(), 1.0);
-        durs.insert("c".into(), 1.5);
-
-        let result = compute_recalibrated_timings(&segments, &durs, 0.2);
-
-        // a: 0.0 .. 1.0, cursor = 1.2
-        // b: cursor actual 1.2, pero s2.start=6.0 -> cursor salta a 6.0
-        //    duracion = 8.0 - 6.0 = 2.0, b: 6.0 .. 8.0, cursor = 8.2
-        // c: 8.2 .. 9.7
-        assert_eq!(result.len(), 3);
-        assert!((result[0].start - 0.0).abs() < 1e-9);
-        assert!((result[0].end - 1.0).abs() < 1e-9);
-        assert!((result[1].start - 6.0).abs() < 1e-9);
-        assert!((result[1].end - 8.0).abs() < 1e-9);
-        assert!((result[2].start - 8.2).abs() < 1e-9);
-        assert!((result[2].end - 9.7).abs() < 1e-9);
+    fn factor_clamp_cuando_supera_rango() {
+        // Audio 100s, timeline 10s → ideal 10x, se clampa a FACTOR_MAX.
+        let f = compute_global_speedup_factor(100.0, 10.0);
+        assert!(
+            (f - FACTOR_MAX).abs() < 1e-9,
+            "factor esperado {}, got {f}",
+            FACTOR_MAX
+        );
+        // Audio 5s, timeline 100s → ideal 0.05x, se clampa a FACTOR_MIN.
+        let f = compute_global_speedup_factor(5.0, 100.0);
+        assert!(
+            (f - FACTOR_MIN).abs() < 1e-9,
+            "factor esperado {}, got {f}",
+            FACTOR_MIN
+        );
     }
 
     #[test]
-    fn compute_recalibrated_timings_orden_por_start() {
-        use std::collections::HashMap;
-        // Los segmentos vienen desordenados; el algoritmo los ordena por start
-        // antes de recalcular. Verifica que el ORDEN se respeta aunque los
-        // recalibrados se coloquen cumulativamente (sin respetar su start
-        // original, eso es lo que hace que el audio «dicte» el tiempo).
-        let s1 = seg("a", 10.0, 12.0, "Tarde", "Late");
-        let s2 = seg("b", 0.0, 2.0, "Temprano", "Early");
-        let segments = vec![s1.clone(), s2.clone()];
-
-        let mut durs = HashMap::new();
-        durs.insert("a".into(), 1.0);
-        durs.insert("b".into(), 0.5);
-
-        let result = compute_recalibrated_timings(&segments, &durs, 0.2);
-
-        // Orden: b (start=0) primero, a (start=10) después. Cumulativo dentro
-        // del cluster de recalibrados.
-        assert_eq!(result[0].id, "b");
-        assert_eq!(result[1].id, "a");
-        assert!((result[0].start - 0.0).abs() < 1e-9);
-        assert!((result[0].end - 0.5).abs() < 1e-9);
-        assert!((result[1].start - 0.7).abs() < 1e-9);
-        assert!((result[1].end - 1.7).abs() < 1e-9);
+    fn factor_en_casos_degenerados_devuelve_uno() {
+        // Audio o timeline en 0 / no finitos → factor 1.0 (sin cambio).
+        assert!((compute_global_speedup_factor(0.0, 10.0) - 1.0).abs() < 1e-9);
+        assert!((compute_global_speedup_factor(10.0, 0.0) - 1.0).abs() < 1e-9);
+        assert!((compute_global_speedup_factor(f64::NAN, 10.0) - 1.0).abs() < 1e-9);
+        assert!((compute_global_speedup_factor(10.0, f64::NAN) - 1.0).abs() < 1e-9);
     }
 }

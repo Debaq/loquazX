@@ -36,17 +36,24 @@ pub struct DubSettings {
 }
 
 /// Sintetiza `text` con el motor de `settings` y lo deja en `out_wav`. Crea el
-/// directorio destino.
+/// directorio destino. Las opciones `factor` y `target_secs` son
+/// independientes y se combinan en una sola cadena de filtros:
 ///
-/// - Si `target_secs` es `Some`, ajusta el audio con `atempo` para que dure
-///   exactamente ese tiempo (modo clásico: encajar el audio al hueco del
-///   segmento).
-/// - Si `target_secs` es `None`, deja el audio a velocidad natural
-///   (modo «recalibrar»: el audio dicta la duración del segmento).
+/// - `factor`: aplica `atempo(factor)` al audio natural. Se usa para la
+///   recalibración de velocidad global (ADR-010).
+/// - `target_secs`: ajusta la duración del audio al `target_secs`
+///   (modo clásico: encajar al `end - start` del segmento).
+///
+/// Si ambos son `Some`, se aplica `atempo(factor)` y luego `atrim +
+/// apad` para llegar exactamente a `target_secs` (rellenando con silencio
+/// si sobra espacio, recortando si sobra audio). Si solo uno es `Some`,
+/// se aplica solo ese paso. Si ninguno, se deja el audio a velocidad
+/// natural.
 pub fn synth_segment(
     settings: &DubSettings,
     text: &str,
     models_dir: &Path,
+    factor: Option<f64>,
     target_secs: Option<f64>,
     out_wav: &Path,
 ) -> Result<(), String> {
@@ -54,14 +61,46 @@ pub fn synth_segment(
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("No se pudo crear el directorio de doblaje: {e}"))?;
     }
+    // Si no hay factor ni target, el natural es el final: copiamos directo.
+    if factor.is_none() && target_secs.is_none() {
+        let _ = std::fs::remove_file(out_wav);
+        return synth_natural(settings, text, models_dir, out_wav);
+    }
     // WAV «natural» temporal junto al destino; se borra tras ajustar.
     let natural = out_wav.with_extension("natural.wav");
-    let synth = synth_natural(settings, text, models_dir, &natural);
-    let result = match target_secs {
-        Some(target) => synth.and_then(|()| audio::fit_duration(&natural, out_wav, target)),
-        None => synth.and_then(|()| std::fs::rename(&natural, out_wav).map_err(|e| {
-            format!("No se pudo mover el WAV natural a {}: {e}", out_wav.display())
-        })),
+    synth_natural(settings, text, models_dir, &natural)?;
+
+    if let (Some(f), Some(target)) = (factor, target_secs) {
+        // atempo(factor) + atrim + apad para llegar exactamente al target.
+        // atrim recorta si sobra audio; apad rellena con silencio si falta.
+        // asetpts resetea los timestamps para que el atrim empiece en 0.
+        let filter = format!(
+            "atempo={f},asetpts=PTS-STARTPTS,atrim=0:{target},apad=whole_dur={target}"
+        );
+        let result = audio::run_ffmpeg_filter(
+            &natural,
+            out_wav,
+            &filter,
+            "ajustar audio con factor y target",
+        );
+        let _ = std::fs::remove_file(&natural);
+        return result;
+    }
+
+    let result = if let Some(f) = factor {
+        // Solo factor: atempo(f) sobre el natural, sin target. El audio
+        // modificado se usa tal cual (duración = natural / f).
+        let filter = format!("atempo={f},asetpts=PTS-STARTPTS");
+        audio::run_ffmpeg_filter(
+            &natural,
+            out_wav,
+            &filter,
+            "aplicar factor global de atempo",
+        )
+    } else {
+        // Solo target: comportamiento clásico (fit_duration con atempo).
+        let target = target_secs.expect("target_secs es Some en este branch");
+        audio::fit_duration(&natural, out_wav, target)
     };
     let _ = std::fs::remove_file(&natural);
     result
@@ -179,6 +218,7 @@ mod tests {
             &settings,
             "Buongiorno, questa è una prova di doblaje con Piper.",
             models_dir,
+            None,
             Some(2.0),
             &out,
         )

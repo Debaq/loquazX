@@ -515,20 +515,6 @@ async fn recalibrar_audios(
     .map_err(|e| format!("La recalibración se interrumpió: {e}"))?
 }
 
-// ADR-010: restaura los `start`/`end` originales desde
-// `segments.original.json`. Síncrono: solo copia un archivo.
-#[tauri::command]
-fn restaurar_timings_originales(path: String) -> Result<Project, String> {
-    project::restore_original_timings(&PathBuf::from(path))
-}
-
-// ADR-010: indica si existe backup de timings originales. La UI lo usa para
-// mostrar el botón "Restaurar timings" solo cuando hay algo que restaurar.
-#[tauri::command]
-fn tiene_backup_timings(path: String) -> bool {
-    project::has_original_timings_backup(&PathBuf::from(path))
-}
-
 /// Shims públicos para tests de integración que necesitan tocar el pipeline
 /// interno sin pasar por la UI ni por `tauri::test`. Marcados con el prefijo
 /// `__test_` para que sea evidente que no son parte de la API de cara al
@@ -597,16 +583,6 @@ pub mod __test {
         super::project::recalibrate_segments(path, models_dir, settings, |_, _| {})
     }
 
-    pub fn restaurar_timings_originales(
-        path: &Path,
-    ) -> Result<super::project::Project, String> {
-        super::project::restore_original_timings(path)
-    }
-
-    pub fn tiene_backup_timings(path: &Path) -> bool {
-        super::project::has_original_timings_backup(path)
-    }
-
     /// Crea un `MediaServer` y devuelve un handle de testing con su puerto.
     /// Permite a los tests E2E verificar que las páginas rasterizadas se
     /// sirven correctamente por HTTP, que es el camino que usa el frontend.
@@ -670,8 +646,6 @@ pub fn run() {
             renderizar_presentacion,
             regenerar_imagenes_pdf,
             recalibrar_audios,
-            restaurar_timings_originales,
-            tiene_backup_timings,
             forma_onda,
             url_media,
             url_slide

@@ -64,7 +64,7 @@ El botón «Modelo» abre el gestor de modelos whisper. Cada nivel (`tiny`, `bas
 
 Un proyecto puede traer, además del video fuente, un **PDF de fondo** y segmentos con `slide: number` (1‑based). El botón «Importar PDF» copia el PDF bajo `slides/` y pre‑cuenta las páginas; el botón «Importar audio» acepta un audio arbitrario cuando no hay video; «Importar segmentos JSON» levanta un JSON con `[{start, end, slide, source}]` y rellena los segmentos (sobrescribe tras confirmar). Tras traducir y doblar los segmentos como siempre, «Exportar video» produce el mp4 final (`exports/<nombre>.mp4`) sincronizando páginas del PDF con los huecos `[start, end)` y mezclando los WAV de `runs/dub/`.
 
-**Recalibración de timings**: cuando los `start`/`end` originales son aproximados, comprimir el audio con `atempo` para encajar degrada la naturalidad de la voz. «Recalibrar» (icono de sliders) deja que el audio dictate la duración: sintetiza cada segmento a velocidad natural, reasigna los `start`/`end` cumulativamente con un gap de 0.2s, y guarda un backup (`segments.original.json`) que «Restaurar» (icono de flecha) revierte.
+**Recalibración de velocidad**: por defecto, cada audio se ajusta con `atempo` a su `end - start` individualmente, lo que puede hacer que la velocidad de habla varíe mucho entre segmentos. «Recalibrar» (icono de sliders) aplica un único factor de atempo a **todos** los audios, calculado para que la suma de las duraciones naturales coincida con la duración total del timeline. Los `start`/`end` no se tocan; el factor se clampa al rango `[0.6, 1.8]x` para que la voz no se degrade demasiado. Es reversible: regenerar con otro factor o re-doblar sobrescribe los WAVs sin afectar al timeline.
 
 ### Traducción (ADR-006)
 
