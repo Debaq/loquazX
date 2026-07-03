@@ -569,6 +569,9 @@ function App() {
   }
 
   // ADR-010: renderiza el video de presentación y deja el mp4 en `exports/`.
+  // Auto-dobla los segmentos traducidos que aún no tengan WAV usando el
+  // motor y la voz configurados, así el usuario no tiene que pasar por
+  // «Generar todas» en la Timeline antes de exportar.
   async function renderizarPresentacion() {
     if (!project) return;
     setRenderingPresentation(true);
@@ -581,6 +584,7 @@ function App() {
       await guardarProyecto();
       const reporte = await invoke<RenderReport>("renderizar_presentacion", {
         path: project.path,
+        ajustes: { engine: dubEngine, voice: dubVoice },
       });
       await message(
         `Video generado en ${reporte.output}\nDuración: ${reporte.duration_secs.toFixed(1)} s`,
@@ -642,7 +646,15 @@ function App() {
         onExportPresentation={renderizarPresentacion}
         canExportPresentation={
           project?.slides_path != null &&
-          segments.some((s) => project?.dubs.includes(s.id))
+          segments.some((s) => s.translation.trim().length > 0) &&
+          dubVoice !== ""
+        }
+        segmentsToDubCount={
+          segments.filter(
+            (s) =>
+              s.translation.trim().length > 0 &&
+              !(project?.dubs.includes(s.id) ?? false),
+          ).length
         }
         renderingPresentation={renderingPresentation}
         renderProgress={renderProgress}

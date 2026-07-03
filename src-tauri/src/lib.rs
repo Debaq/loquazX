@@ -448,15 +448,20 @@ struct ProgresoPresentacion {
 }
 
 // ADR-010: rasteriza el PDF, concatena el audio doblado y compone el mp4
-// final. Asume que el usuario ya tradujo y dobló los segmentos. Asíncrono:
+// final. Auto-dobla los segmentos traducidos que aún no tengan WAV (con el
+// motor y la voz que la UI tenga configurados) para que el usuario no
+// tenga que pasar por el botón «Generar todas» de la Timeline. Asíncrono:
 // puede tardar varios segundos y no debe congelar el hilo principal.
 #[tauri::command]
 async fn renderizar_presentacion(
+    app: tauri::AppHandle,
     window: tauri::Window,
     path: String,
+    ajustes: tts::DubSettings,
 ) -> Result<project::RenderReport, String> {
+    let dir = models_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        project::render_presentation(&PathBuf::from(path), |etapa, total| {
+        project::render_presentation(&PathBuf::from(path), &dir, &ajustes, |etapa, total| {
             let _ = window.emit(
                 "presentacion:progreso",
                 ProgresoPresentacion { etapa, total },
@@ -489,6 +494,9 @@ pub mod __test {
     use std::path::{Path, PathBuf};
 
     pub use super::project::{Presentation, Segment};
+    pub use super::tts::DubSettings;
+    /// Alias para mantener el nombre usado en el shim de testing.
+    pub use super::tts::Engine as DubEngine;
 
     pub fn crear_proyecto(
         path: &Path,
@@ -526,9 +534,11 @@ pub mod __test {
 
     pub fn render_presentacion(
         path: &Path,
+        models_dir: &Path,
+        settings: &super::tts::DubSettings,
         on_progress: impl Fn(usize, usize),
     ) -> Result<super::project::RenderReport, String> {
-        super::project::render_presentation(path, on_progress)
+        super::project::render_presentation(path, models_dir, settings, on_progress)
     }
 
     pub fn regenerar_imagenes_pdf(path: &Path) -> Result<super::project::Project, String> {

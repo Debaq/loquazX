@@ -739,14 +739,18 @@ pub fn regenerate_slide_pages(path: &Path) -> Result<Project, String> {
 }
 
 /// Esquema del JSON externo de import de segmentos (ADR-010). El usuario
-/// provee `start`, `end`, `source` y opcionalmente `slide`; la app asigna
-/// `id = uuid` y deja `translation = ""` para que el flujo de traducción los
-/// rellene después.
+/// provee `start`, `end`, `source` y opcionalmente `slide` y `translation`.
+/// La app asigna `id = uuid`; si falta `translation` queda vacía para que el
+/// flujo de traducción la rellene después. Aceptar `translation` evita que el
+/// usuario tenga que traducir aparte cuando ya tiene el texto final a mano
+/// (caso típico: import de un JSON generado por un LLM externo, ADR-006).
 #[derive(Debug, Deserialize)]
 pub struct SegmentImport {
     pub start: f64,
     pub end: f64,
     pub source: String,
+    #[serde(default)]
+    pub translation: String,
     #[serde(default)]
     pub slide: Option<u32>,
 }
@@ -809,7 +813,7 @@ pub fn import_segments_json(
             start: s.start,
             end: s.end,
             source: s.source,
-            translation: String::new(),
+            translation: s.translation,
             slide: s.slide,
         });
     }
@@ -827,13 +831,25 @@ pub struct RenderReport {
     pub duration_secs: f64,
 }
 
-/// Renderiza el video de presentación: concatena los WAV de doblaje con
-/// silencios y compone el mp4 final (ADR-010). Las páginas del PDF ya están
+/// Renderiza el video de presentación: dobla los segmentos traducidos que
+/// aún no tengan WAV, concatena el audio con silencios en los huecos y
+/// compone el mp4 final (ADR-010). Las páginas del PDF ya están
 /// rasterizadas bajo `slides/pages/` desde el import, así que el render no
-/// depende de `pdftoppm`. Asume que el usuario ya tradujo y dobló los
-/// segmentos. Emite `on_progress(hechos, total)` por cada etapa (audio, video).
+/// depende de `pdftoppm`.
+///
+/// El auto-doblaje elimina un paso manual en el flujo de presentación: con
+/// que el usuario tenga los segmentos traducidos, ya puede exportar; el
+/// render se encarga de sintetizar los WAV que falten. Si el usuario
+/// prefiere doblar con otro motor, puede hacerlo antes vía el botón
+/// «Generar todas» de la Timeline (que no usa este atajo).
+///
+/// `on_progress(hechos, total)` se emite por cada segmento doblado más las
+/// dos etapas finales (audio, video). Si no hay nada que doblar, `total`
+/// vale 2.
 pub fn render_presentation(
     path: &Path,
+    models_dir: &Path,
+    settings: &crate::tts::DubSettings,
     on_progress: impl Fn(usize, usize),
 ) -> Result<RenderReport, String> {
     let manifest: Manifest = read_json(&path.join("project.json"))
@@ -864,11 +880,31 @@ pub fn render_presentation(
         );
     }
 
-    on_progress(0, 2);
+    // Auto-doblaje: sintetiza los WAV de los segmentos que tienen traducción
+    // y aún no tienen audio. Los segmentos sin traducción quedan en silencio.
+    let pendientes: Vec<&Segment> = segments
+        .iter()
+        .filter(|s| !s.translation.trim().is_empty() && !dub_path(path, &s.id).is_file())
+        .collect();
+    let total_pendientes = pendientes.len();
+    let total_etapas = total_pendientes + 2;
+    on_progress(0, total_etapas);
+    for (i, s) in pendientes.iter().enumerate() {
+        let target = (s.end - s.start).max(0.0);
+        crate::tts::synth_segment(
+            settings,
+            &s.translation,
+            models_dir,
+            target,
+            &dub_path(path, &s.id),
+        )?;
+        on_progress(i + 1, total_etapas);
+    }
+
     // 1) Construye la pista de audio a partir de los WAV de doblaje.
     let audio_out = path.join("slides").join("audio.wav");
     crate::presentacion::concatenar_audio_doblaje(&segments, path, &audio_out)?;
-    on_progress(1, 2);
+    on_progress(total_pendientes + 1, total_etapas);
 
     // 2) Compone el mp4 final.
     let exports_dir = path.join("exports");
@@ -878,7 +914,7 @@ pub fn render_presentation(
     let output = exports_dir.join(format!("{project_name}.mp4"));
     let duration =
         crate::presentacion::componer_mp4(&pages_dir, page_count, &segments, &audio_out, &output)?;
-    on_progress(2, 2);
+    on_progress(total_etapas, total_etapas);
 
     Ok(RenderReport {
         output: output.display().to_string(),

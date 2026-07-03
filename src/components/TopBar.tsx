@@ -48,8 +48,12 @@ interface Props {
   onImportSegmentsJson: () => void;
   /** Renderiza el video de presentación (ADR-010). */
   onExportPresentation: () => void;
-  /** `true` cuando el proyecto tiene un PDF y al menos un segmento doblado. */
+  /** `true` cuando el proyecto tiene un PDF, al menos un segmento traducido
+   * y una voz configurada; el render auto-doblará los pendientes. */
   canExportPresentation: boolean;
+  /** Cantidad de segmentos traducidos que aún no tienen WAV; el botón
+   * «Exportar video» los doblará en el mismo paso si hay alguno. */
+  segmentsToDubCount: number;
   /** `true` mientras se renderiza el video de presentación. */
   renderingPresentation: boolean;
   /** Avance del render de presentación, si está corriendo. */
@@ -87,6 +91,7 @@ function TopBar({
   onImportSegmentsJson,
   onExportPresentation,
   canExportPresentation,
+  segmentsToDubCount,
   renderingPresentation,
   renderProgress,
 }: Props) {
@@ -304,7 +309,9 @@ function TopBar({
               ? renderProgress
                 ? `Renderizando presentación… (${renderProgress.etapa}/${renderProgress.total})`
                 : "Renderizando presentación…"
-              : "Exportar video de presentación"
+              : segmentsToDubCount > 0
+                ? `Exportar video (doblará ${segmentsToDubCount} segmento${segmentsToDubCount === 1 ? "" : "s"} primero)`
+                : "Exportar video de presentación"
           }
           aria-label="Exportar video de presentación"
         >

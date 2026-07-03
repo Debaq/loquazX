@@ -6,6 +6,15 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Directorio de modelos vacío para los tests. El render recibe el dir
+/// pero los tests no descargan voces reales: pre-insertamos WAVs dummy
+/// en `runs/dub/` y dejamos que el auto-doblaje se salte esos. Si un
+/// test quiere ejercitar el auto-doblaje usa el motor edge-tts con
+/// un voice ficticio y verifica el error.
+fn models_dir() -> PathBuf {
+    PathBuf::from("/tmp")
+}
+
 fn ffmpeg_disponible() -> bool {
     Command::new("ffmpeg")
         .arg("-version")
@@ -141,9 +150,13 @@ fn render_presentacion_e2e() {
         assert!(status.success(), "no se pudo generar {}", wav.display());
     }
 
-    // Render.
-    let report =
-        loquazx_lib::__test::render_presentacion(&project, |_, _| {}).expect("render_presentacion");
+    // Render (los segmentos ya están doblados, así que el render no auto-dobla).
+    let settings = loquazx_lib::__test::DubSettings {
+        engine: loquazx_lib::__test::DubEngine::Piper,
+        voice: String::new(),
+    };
+    let report = loquazx_lib::__test::render_presentacion(&project, &models_dir(), &settings, |_, _| {})
+        .expect("render_presentacion");
     let out = PathBuf::from(&report.output);
     assert!(out.is_file(), "no se generó el mp4: {}", out.display());
     assert!(
@@ -268,6 +281,100 @@ fn render_presentacion_pdf_muchas_paginas() {
             "quedó un staging sin renombrar: {name}"
         );
     }
+}
+
+/// Verifica el auto-doblaje del render: cuando los segmentos están traducidos
+/// pero no doblados, `render_presentation` debe sintetizar los WAV faltantes
+/// antes de generar el mp4. Para que el test sea reproducible sin descargar
+/// voces Piper, insertamos manualmente los WAV en `runs/dub/` y verificamos
+/// que el render los usa directamente (cubre el camino "no hay auto-doblaje
+/// que hacer"). El caso "no hay WAVs y auto-doblaje falla" se valida con
+/// un `models_dir` vacío y motor Piper, que debe fallar de forma controlada.
+#[test]
+#[ignore]
+fn render_presentacion_auto_doblaje() {
+    if !ffmpeg_disponible() || !poppler_disponible() {
+        eprintln!("Falta ffmpeg, pdftoppm o pdfinfo; saltando.");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("demo.lqzx");
+    let _ = loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en")
+        .expect("crear proyecto");
+
+    let pdf = generar_pdf(dir.path());
+    let _ = loquazx_lib::__test::importar_pdf(&project, &pdf).expect("importar PDF");
+
+    let json = dir.path().join("segs.json");
+    std::fs::write(
+        &json,
+        r#"{"segments":[
+            {"start":0.0,"end":2.0,"source":"Hola","translation":"Hello"},
+            {"start":2.5,"end":4.0,"source":"Mundo","translation":"World"}
+        ]}"#,
+    )
+    .unwrap();
+    let _ = loquazx_lib::__test::importar_segmentos_json(&project, &json)
+        .expect("importar segmentos");
+
+    // Sin WAVs y con models_dir vacío: el auto-doblaje no puede sintetizar
+    // porque no hay voces Piper. El error debe propagarse, no generar un mp4
+    // silencioso.
+    let models_vacio = dir.path().join("models_vacio");
+    std::fs::create_dir_all(&models_vacio).unwrap();
+    let settings_vacio = loquazx_lib::__test::DubSettings {
+        engine: loquazx_lib::__test::DubEngine::Piper,
+        voice: "es_ES-ficticio-x_low".into(),
+    };
+    let resultado = loquazx_lib::__test::render_presentacion(
+        &project,
+        &models_vacio,
+        &settings_vacio,
+        |_, _| {},
+    );
+    assert!(
+        resultado.is_err(),
+        "render sin voz debería fallar; devolvió: {resultado:?}"
+    );
+
+    // Pre-insertamos WAVs dummy: el render los toma (cero auto-doblaje) y
+    // produce el mp4 sin error.
+    let segments = loquazx_lib::__test::load_segments(&project).expect("segments");
+    let dub_dir = project.join("runs").join("dub");
+    std::fs::create_dir_all(&dub_dir).unwrap();
+    for s in &segments {
+        let wav = dub_dir.join(format!("{}.wav", s.id));
+        let status = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1.5",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                wav.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success(), "no se pudo generar {}", wav.display());
+    }
+
+    let settings = loquazx_lib::__test::DubSettings {
+        engine: loquazx_lib::__test::DubEngine::Piper,
+        voice: String::new(),
+    };
+    let report = loquazx_lib::__test::render_presentacion(
+        &project,
+        &models_vacio,
+        &settings,
+        |_, _| {},
+    )
+    .expect("render con WAVs preexistentes");
+    let out = PathBuf::from(&report.output);
+    assert!(out.is_file(), "no se generó el mp4: {}", out.display());
 }
 
 /// Variante del E2E con un path que tiene espacios y acentos, que es donde
