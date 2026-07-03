@@ -40,8 +40,12 @@ fn crear_proyecto(
 }
 
 #[tauri::command]
-fn abrir_proyecto(path: String) -> Result<Project, String> {
-    project::open(&PathBuf::from(path))
+async fn abrir_proyecto(path: String) -> Result<Project, String> {
+    // Asíncrono: la auto-recuperación de páginas del PDF (ADR-010) puede
+    // tardar varios segundos en PDFs grandes y no debe congelar la UI.
+    tauri::async_runtime::spawn_blocking(move || project::open(&PathBuf::from(path)))
+        .await
+        .map_err(|e| format!("La apertura del proyecto se interrumpió: {e}"))?
 }
 
 #[tauri::command]
@@ -374,10 +378,14 @@ fn conteo_paginas_pdf(pdf: String) -> Result<u32, String> {
 }
 
 // ADR-010: importa un PDF de fondo al proyecto, lo copia bajo `slides/` y
-// persiste el conteo de páginas en el manifiesto.
+// rasteriza las páginas en background (no bloquea la UI).
 #[tauri::command]
-fn importar_pdf(path: String, pdf: String) -> Result<Project, String> {
-    project::import_pdf(&PathBuf::from(path), &PathBuf::from(pdf))
+async fn importar_pdf(path: String, pdf: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::import_pdf(&PathBuf::from(path), &PathBuf::from(pdf))
+    })
+    .await
+    .map_err(|e| format!("La importación del PDF se interrumpió: {e}"))?
 }
 
 // ADR-010: importa un audio arbitrario como `manifest.audio`. Pensado para el
@@ -452,6 +460,10 @@ pub mod __test {
 
     pub fn importar_pdf(path: &Path, pdf: &Path) -> Result<super::project::Project, String> {
         super::project::import_pdf(path, pdf)
+    }
+
+    pub fn abrir(path: &Path) -> Result<super::project::Project, String> {
+        super::project::open(path)
     }
 
     pub fn importar_segmentos_json(

@@ -207,6 +207,27 @@ pub fn open(path: &Path) -> Result<Project, String> {
             manifest.format_version, FORMAT_VERSION
         ));
     }
+    // Auto-recuperación (ADR-010): si el proyecto tiene un PDF pero faltan
+    // las imágenes rasterizadas (porque se cerró la app durante un import o
+    // porque se manipularon a mano), las regeneramos antes de devolver.
+    // Esto deja el proyecto siempre listo para preview y render sin
+    // requerir un reimport explícito. Si la regeneración falla, devolvemos
+    // el Project igual y el frontend mostrará el error con la opción de
+    // reimportar.
+    if let Some(slides) = manifest.slides.as_ref() {
+        let pdf_abs = path.join(&slides.file);
+        let pages_dir = path.join("slides").join("pages");
+        let needs_regen = !pages_dir.join("page-1.png").is_file();
+        if needs_regen && pdf_abs.is_file() {
+            eprintln!(
+                "[loquazX] Regenerando páginas del PDF en {}",
+                pages_dir.display()
+            );
+            if let Err(e) = instalar_paginas_rasterizadas(&pdf_abs, &pages_dir) {
+                eprintln!("[loquazX] No se pudieron regenerar las páginas: {e}");
+            }
+        }
+    }
     // Un segments.json ausente o corrupto no impide abrir: el manifiesto manda.
     let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
         .unwrap_or_default()
@@ -562,11 +583,51 @@ pub fn generate_dub_segment(
     Ok(out)
 }
 
+/// Rasteriza un PDF en `pages_dir` de forma atómica: escribe a un directorio
+/// staging `slides/.pages_new/` y solo al terminar bien la rasterización
+/// reemplaza `pages/`. Así, si el proceso se interrumpe a mitad (cierre de la
+/// app, crash, falta de espacio), el proyecto nunca queda en un estado
+/// inconsistente donde el manifiesto dice "tengo PDF" pero `pages/` está
+/// vacío. Si la rasterización falla, el staging se descarta y `pages/` queda
+/// como estaba.
+fn instalar_paginas_rasterizadas(pdf: &Path, pages_dir: &Path) -> Result<(), String> {
+    let parent = pages_dir
+        .parent()
+        .ok_or_else(|| "pages_dir no tiene directorio padre".to_string())?;
+    let staging = parent.join(".pages_new");
+    if staging.exists() {
+        fs::remove_dir_all(&staging)
+            .map_err(|e| format!("No se pudo limpiar el staging previo: {e}"))?;
+    }
+    fs::create_dir_all(&staging)
+        .map_err(|e| format!("No se pudo crear el directorio de staging: {e}"))?;
+
+    // Si pdftoppm falla aquí, el staging queda con archivos parciales; lo
+    // limpiamos antes de propagar el error para no dejar basura.
+    if let Err(e) = crate::presentacion::rasterizar_pdf(pdf, &staging) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+
+    if pages_dir.exists() {
+        fs::remove_dir_all(pages_dir)
+            .map_err(|e| format!("No se pudo limpiar el pages/ anterior: {e}"))?;
+    }
+    fs::rename(&staging, pages_dir).map_err(|e| {
+        // Si el rename falla, intentamos recuperar poniendo staging como pages/
+        // para que al menos las imágenes queden visibles; si esto también
+        // falla, dejamos staging y propagamos el error original.
+        let _ = fs::rename(&staging, pages_dir);
+        format!("No se pudo mover el staging a pages/: {e}")
+    })?;
+    Ok(())
+}
+
 /// Importa un PDF como fondo del modo presentación (ADR-010). Copia el archivo
-/// al proyecto bajo `slides/`, persiste el conteo de páginas en el manifiesto
-/// y rasteriza cada página a `slides/pages/page-N.png` con `pdftoppm` para
-/// que estén disponibles de inmediato tanto en el preview como en el render
-/// final (que ya no necesita volver a rasterizar).
+/// al proyecto bajo `slides/`, rasteriza cada página a `slides/pages/page-N.png`
+/// con `pdftoppm` (300 DPI) y solo al final persiste el conteo en el manifiesto.
+/// De esta forma, si la rasterización se interrumpe, el proyecto anterior
+/// queda intacto (auto-recuperación al abrir).
 ///
 /// Si ya había un PDF, las páginas viejas se descartan y los segmentos
 /// previos conservan su `slide`, que se acota contra el nuevo `page_count`
@@ -591,13 +652,7 @@ pub fn import_pdf(path: &Path, pdf: &Path) -> Result<Project, String> {
     let slides_dir = path.join("slides");
     fs::create_dir_all(&slides_dir)
         .map_err(|e| format!("No se pudo crear el directorio slides: {e}"))?;
-    // Borra páginas viejas (de un PDF anterior) para que `page-N.png` siempre
-    // corresponda al PDF vigente. Si no había directorio, no es un error.
     let pages_dir = slides_dir.join("pages");
-    if pages_dir.exists() {
-        fs::remove_dir_all(&pages_dir)
-            .map_err(|e| format!("No se pudo limpiar el directorio de páginas: {e}"))?;
-    }
     let name = pdf
         .file_name()
         .ok_or_else(|| format!("Ruta de PDF inválida: {}", pdf.display()))?;
@@ -606,17 +661,17 @@ pub fn import_pdf(path: &Path, pdf: &Path) -> Result<Project, String> {
         .map_err(|e| format!("No se pudo copiar el PDF al proyecto: {e}"))?;
     let relative = format!("slides/{}", name.to_string_lossy());
 
+    // Rasteriza atómicamente: si esto falla o se interrumpe, el pages/ viejo
+    // (o ninguno) queda intacto y el proyecto no se actualiza.
+    instalar_paginas_rasterizadas(&destination, &pages_dir)?;
+
+    // Recién ahora, con las imágenes ya en disco, persistimos el manifiesto.
     manifest.slides = Some(Presentation {
         file: relative,
         page_count,
         imported_at: unix_now()?,
     });
     write_json(&path.join("project.json"), &manifest)?;
-
-    // Rasteriza cada página del PDF. Si esto falla, el proyecto queda con el
-    // PDF persistido pero sin páginas, y el preview/render no funcionarán;
-    // devolvemos el error para que la UI lo muestre y el usuario decida.
-    crate::presentacion::rasterizar_pdf(&destination, &pages_dir)?;
 
     let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
         .unwrap_or_default()

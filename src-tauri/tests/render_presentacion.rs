@@ -170,4 +170,21 @@ fn render_presentacion_e2e() {
     assert!(probe.status.success(), "ffprobe falló");
     let codec = String::from_utf8_lossy(&probe.stdout);
     assert_eq!(codec.trim(), "h264", "codec de video inesperado: {codec}");
+
+    // Auto-recuperación (ADR-010): simula un cierre abrupto durante el import
+    // borrando `slides/pages/` y dejando solo el PDF. Al volver a abrir el
+    // proyecto, `open` debe regenerar las imágenes.
+    let pages = project.join("slides").join("pages");
+    std::fs::remove_dir_all(&pages).expect("borrar pages/ para simular cierre abrupto");
+    assert!(!pages.exists(), "pages/ debería estar borrado");
+
+    let _ = loquazx_lib::__test::abrir(&project).expect("reabrir");
+    for n in 1..=3 {
+        let png = pages.join(format!("page-{n}.png"));
+        assert!(
+            png.is_file(),
+            "auto-recuperación no regeneró la página {n}: {}",
+            png.display()
+        );
+    }
 }
