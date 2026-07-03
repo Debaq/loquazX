@@ -20,7 +20,6 @@ import type {
   DubEngine,
   DubResult,
   RenderReport,
-  RecalibrationReport,
 } from "./types";
 
 const NIVEL_POR_DEFECTO = "base";
@@ -77,11 +76,6 @@ function App() {
   // ADR-010: estado del render de la presentación (PDF + audio doblado).
   const [renderingPresentation, setRenderingPresentation] = useState(false);
   const [renderProgress, setRenderProgress] = useState<{ etapa: number; total: number } | null>(null);
-  // ADR-010: estado de la recalibración de timings al audio natural.
-  const [recalibrating, setRecalibrating] = useState(false);
-  const [recalProgress, setRecalProgress] = useState<{ hechos: number; total: number } | null>(null);
-  // ADR-010: indica si hay backup de timings originales (botón "Restaurar").
-  const [hasTimingsBackup, setHasTimingsBackup] = useState(false);
 
   // Desactiva el zoom del webview (Ctrl+rueda, pellizco, Ctrl +/-/0): la app
   // no debe escalar como página web; el único zoom es el de la línea de tiempo.
@@ -231,10 +225,6 @@ function App() {
     // Los selectores reflejan los idiomas del proyecto abierto.
     setSourceLanguage(proyecto.manifest.source_language);
     setTargetLanguage(proyecto.manifest.target_language);
-    // Averigua si hay backup de timings originales (botón "Restaurar").
-    invoke<boolean>("tiene_backup_timings", { path: proyecto.path })
-      .then(setHasTimingsBackup)
-      .catch(() => setHasTimingsBackup(false));
   }
 
   // Cambia los idiomas: si hay proyecto, persiste en su manifiesto (el de origen
@@ -624,73 +614,6 @@ function App() {
     }
   }
 
-  // ADR-010: recalibra los timings de los segmentos a la duración natural del
-  // audio sintetizado. Útil cuando los `start`/`end` originales eran
-  // aproximados: deja que el audio dicte la duración de cada segmento y los
-  // reordena cumulativamente, con un gap fijo entre ellos. Antes de
-  // modificar, hace un backup de `segments.json` en
-  // `segments.original.json` (si no existe) para poder deshacer.
-  async function recalibrarAudios() {
-    if (!project) return;
-    const continuar = await ask(
-      "Esto ajustará los tiempos de los segmentos a la duración natural del \
-audio sintetizado. Se guardará un backup en segments.original.json para \
-poder deshacer.\n\n¿Continuar?",
-      { title: "Recalibrar audios", kind: "info" },
-    );
-    if (!continuar) return;
-    setRecalibrating(true);
-    setRecalProgress({ hechos: 0, total: segments.length });
-    const desuscribir = await listen<{ hechos: number; total: number }>(
-      "recalibrar:progreso",
-      (e) => setRecalProgress({ hechos: e.payload.hechos, total: e.payload.total }),
-    );
-    try {
-      const reporte = await invoke<RecalibrationReport>("recalibrar_audios", {
-        path: project.path,
-        ajustes: { engine: dubEngine, voice: dubVoice },
-      });
-      // Recarga el proyecto desde disco para reflejar los nuevos timings.
-      const proyectoActualizado = await invoke<Project>("abrir_proyecto", {
-        path: project.path,
-      });
-      cargarProyecto(proyectoActualizado);
-      await message(
-        `Recalibrados: ${reporte.recalibrados}\nSin cambios: ${reporte.fallidos}\n\
-Duración total: ${reporte.duracion_total.toFixed(1)} s`,
-        { title: "Recalibrar audios", kind: "info" },
-      );
-    } catch (e) {
-      await message(String(e), { title: "Recalibrar audios", kind: "error" });
-    } finally {
-      desuscribir();
-      setRecalibrating(false);
-      setRecalProgress(null);
-    }
-  }
-
-  // ADR-010: restaura los `start`/`end` originales desde el backup
-  // `segments.original.json`. Los `runs/dub/*.wav` no se tocan: si el usuario
-  // quiere volver a doblar con los timings viejos, regenera el doblaje.
-  async function restaurarTimingsOriginales() {
-    if (!project) return;
-    const continuar = await ask(
-      "Esto restaurará los start/end originales (antes de la última \
-recalibración). Los archivos de audio no se tocan.\n\n¿Continuar?",
-      { title: "Restaurar timings", kind: "info" },
-    );
-    if (!continuar) return;
-    try {
-      const proyectoActualizado = await invoke<Project>(
-        "restaurar_timings_originales",
-        { path: project.path },
-      );
-      cargarProyecto(proyectoActualizado);
-    } catch (e) {
-      await message(String(e), { title: "Restaurar timings", kind: "error" });
-    }
-  }
-
   return (
     <div className="app">
       <TopBar
@@ -740,21 +663,6 @@ recalibración). Los archivos de audio no se tocan.\n\n¿Continuar?",
         }
         renderingPresentation={renderingPresentation}
         renderProgress={renderProgress}
-        onRecalibrarAudios={recalibrarAudios}
-        canRecalibrar={
-          project?.slides_path != null &&
-          segments.some(
-            (s) =>
-              s.translation.trim().length > 0 ||
-              s.source.trim().length > 0,
-          ) &&
-          dubVoice !== "" &&
-          !recalibrating
-        }
-        recalibrating={recalibrating}
-        recalProgress={recalProgress}
-        onRestaurarTimings={restaurarTimingsOriginales}
-        hasTimingsBackup={hasTimingsBackup}
       />
       <div className="app__body">
         <aside className="app__left">

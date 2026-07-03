@@ -128,10 +128,3 @@ export interface RenderReport {
   output: string;
   duration_secs: number;
 }
-
-/** Resultado de recalibrar los timings al audio natural (ADR-010). */
-export interface RecalibrationReport {
-  recalibrados: number;
-  fallidos: number;
-  duracion_total: number;
-}

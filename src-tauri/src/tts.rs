@@ -35,19 +35,13 @@ pub struct DubSettings {
     pub voice: String,
 }
 
-/// Sintetiza `text` con el motor de `settings` y lo deja en `out_wav`. Crea el
-/// directorio destino.
-///
-/// - Si `target_secs` es `Some`, ajusta el audio con `atempo` para que dure
-///   exactamente ese tiempo (modo clásico: encajar el audio al hueco del
-///   segmento).
-/// - Si `target_secs` es `None`, deja el audio a velocidad natural
-///   (modo «recalibrar»: el audio dicta la duración del segmento).
+/// Sintetiza `text` con el motor de `settings` y lo ajusta para que dure
+/// `target_secs`, dejando el WAV final en `out_wav`. Crea el directorio destino.
 pub fn synth_segment(
     settings: &DubSettings,
     text: &str,
     models_dir: &Path,
-    target_secs: Option<f64>,
+    target_secs: f64,
     out_wav: &Path,
 ) -> Result<(), String> {
     if let Some(parent) = out_wav.parent() {
@@ -57,12 +51,7 @@ pub fn synth_segment(
     // WAV «natural» temporal junto al destino; se borra tras ajustar.
     let natural = out_wav.with_extension("natural.wav");
     let synth = synth_natural(settings, text, models_dir, &natural);
-    let result = match target_secs {
-        Some(target) => synth.and_then(|()| audio::fit_duration(&natural, out_wav, target)),
-        None => synth.and_then(|()| std::fs::rename(&natural, out_wav).map_err(|e| {
-            format!("No se pudo mover el WAV natural a {}: {e}", out_wav.display())
-        })),
-    };
+    let result = synth.and_then(|()| audio::fit_duration(&natural, out_wav, target_secs));
     let _ = std::fs::remove_file(&natural);
     result
 }
@@ -179,7 +168,7 @@ mod tests {
             &settings,
             "Buongiorno, questa è una prova di doblaje con Piper.",
             models_dir,
-            Some(2.0),
+            2.0,
             &out,
         )
         .unwrap();

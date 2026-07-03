@@ -485,50 +485,6 @@ async fn regenerar_imagenes_pdf(path: String) -> Result<Project, String> {
     .map_err(|e| format!("La regeneración se interrumpió: {e}"))?
 }
 
-#[derive(Clone, serde::Serialize)]
-struct ProgresoRecalibracion {
-    hechos: usize,
-    total: usize,
-}
-
-// ADR-010: recalibra los timings de los segmentos a la duración natural del
-// audio sintetizado. Asíncrono porque sintetiza cada segmento con TTS y puede
-// tardar varios segundos en proyectos grandes; emite
-// `recalibrar:progreso` por segmento sintetizado.
-#[tauri::command]
-async fn recalibrar_audios(
-    app: tauri::AppHandle,
-    window: tauri::Window,
-    path: String,
-    ajustes: tts::DubSettings,
-) -> Result<project::RecalibrationReport, String> {
-    let dir = models_dir(&app)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        project::recalibrate_segments(&PathBuf::from(path), &dir, &ajustes, |hechos, total| {
-            let _ = window.emit(
-                "recalibrar:progreso",
-                ProgresoRecalibracion { hechos, total },
-            );
-        })
-    })
-    .await
-    .map_err(|e| format!("La recalibración se interrumpió: {e}"))?
-}
-
-// ADR-010: restaura los `start`/`end` originales desde
-// `segments.original.json`. Síncrono: solo copia un archivo.
-#[tauri::command]
-fn restaurar_timings_originales(path: String) -> Result<Project, String> {
-    project::restore_original_timings(&PathBuf::from(path))
-}
-
-// ADR-010: indica si existe backup de timings originales. La UI lo usa para
-// mostrar el botón "Restaurar timings" solo cuando hay algo que restaurar.
-#[tauri::command]
-fn tiene_backup_timings(path: String) -> bool {
-    project::has_original_timings_backup(&PathBuf::from(path))
-}
-
 /// Shims públicos para tests de integración que necesitan tocar el pipeline
 /// interno sin pasar por la UI ni por `tauri::test`. Marcados con el prefijo
 /// `__test_` para que sea evidente que no son parte de la API de cara al
@@ -587,24 +543,6 @@ pub mod __test {
 
     pub fn regenerar_imagenes_pdf(path: &Path) -> Result<super::project::Project, String> {
         super::project::regenerate_slide_pages(path)
-    }
-
-    pub fn recalibrar_audios(
-        path: &Path,
-        models_dir: &Path,
-        settings: &super::tts::DubSettings,
-    ) -> Result<super::project::RecalibrationReport, String> {
-        super::project::recalibrate_segments(path, models_dir, settings, |_, _| {})
-    }
-
-    pub fn restaurar_timings_originales(
-        path: &Path,
-    ) -> Result<super::project::Project, String> {
-        super::project::restore_original_timings(path)
-    }
-
-    pub fn tiene_backup_timings(path: &Path) -> bool {
-        super::project::has_original_timings_backup(path)
     }
 
     /// Crea un `MediaServer` y devuelve un handle de testing con su puerto.
@@ -669,9 +607,6 @@ pub fn run() {
             importar_segmentos_json,
             renderizar_presentacion,
             regenerar_imagenes_pdf,
-            recalibrar_audios,
-            restaurar_timings_originales,
-            tiene_backup_timings,
             forma_onda,
             url_media,
             url_slide
