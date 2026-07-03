@@ -646,13 +646,18 @@ function App() {
         onExportPresentation={renderizarPresentacion}
         canExportPresentation={
           project?.slides_path != null &&
-          segments.some((s) => s.translation.trim().length > 0) &&
+          segments.some(
+            (s) =>
+              s.translation.trim().length > 0 ||
+              s.source.trim().length > 0,
+          ) &&
           dubVoice !== ""
         }
         segmentsToDubCount={
           segments.filter(
             (s) =>
-              s.translation.trim().length > 0 &&
+              (s.translation.trim().length > 0 ||
+                s.source.trim().length > 0) &&
               !(project?.dubs.includes(s.id) ?? false),
           ).length
         }
@@ -711,7 +716,13 @@ function App() {
           projectPath={project?.path ?? null}
           dubs={project?.dubs ?? []}
           dubVersion={dubVersion}
-          canDub={segments.some((s) => s.translation.trim().length > 0) && dubVoice !== ""}
+          canDub={
+            segments.some(
+              (s) =>
+                s.translation.trim().length > 0 ||
+                s.source.trim().length > 0,
+            ) && dubVoice !== ""
+          }
           dubbing={dubbing}
           dubProgress={dubProgress}
           onGenerateDub={generarDoblaje}

@@ -496,7 +496,7 @@ fn existing_dubs(dir: &Path, segments: &[Segment]) -> Vec<String> {
 pub struct DubReport {
     /// Segmentos sintetizados con éxito.
     pub generated: usize,
-    /// Segmentos sin traducción (se omiten, no son un error).
+    /// Segmentos sin texto (se omiten, no son un error).
     pub skipped: usize,
 }
 
@@ -515,11 +515,28 @@ pub fn load_segments(path: &Path) -> Result<Vec<Segment>, String> {
         .segments)
 }
 
-/// Genera el doblaje de todos los segmentos con traducción (ADR-009): por cada
-/// uno sintetiza con `settings` y ajusta el audio al hueco `end - start`,
-/// dejando `runs/dub/<id>.wav`. Emite `on_progress(hechos, total)` segmento a
-/// segmento. Los segmentos sin traducción se omiten. La primera generación con
-/// Piper exige la voz descargada; con edge-tts exige red.
+/// Texto que se usa para doblar un segmento: la traducción si está, si no el
+/// texto origen. En el modo video, lo típico es traducir y doblar la
+/// traducción; en el modo presentación también es habitual querer narrar el
+/// PDF en su idioma original sin traducir.
+fn texto_a_doblar(s: &Segment) -> Option<String> {
+    let t = s.translation.trim();
+    if !t.is_empty() {
+        return Some(t.to_string());
+    }
+    let src = s.source.trim();
+    if !src.is_empty() {
+        return Some(src.to_string());
+    }
+    None
+}
+
+/// Genera el doblaje de todos los segmentos con texto (ADR-009, ADR-010): por
+/// cada uno sintetiza con `settings` el texto devuelto por `texto_a_doblar`
+/// (la traducción si está, si no el origen) y ajusta el audio al hueco
+/// `end - start`, dejando `runs/dub/<id>.wav`. Emite `on_progress(hechos, total)`
+/// segmento a segmento. Los segmentos sin texto se omiten. La primera
+/// generación con Piper exige la voz descargada; con edge-tts exige red.
 pub fn generate_dub(
     path: &Path,
     settings: &crate::tts::DubSettings,
@@ -529,21 +546,25 @@ pub fn generate_dub(
     let segments = load_segments(path)?;
     let pendientes: Vec<&Segment> = segments
         .iter()
-        .filter(|s| !s.translation.trim().is_empty())
+        .filter(|s| texto_a_doblar(s).is_some())
         .collect();
     let total = pendientes.len();
     if total == 0 {
         return Err(
-            "No hay segmentos traducidos para doblar. Traduce el audio primero.".to_string(),
+            "No hay segmentos con texto para doblar. Escribe un texto origen o una \
+             traducción en cada segmento."
+                .to_string(),
         );
     }
 
     on_progress(0, total);
     for (i, segment) in pendientes.iter().enumerate() {
         let target = (segment.end - segment.start).max(0.0);
+        let texto = texto_a_doblar(segment)
+            .expect("filtrado por is_some garantiza texto no vacío");
         crate::tts::synth_segment(
             settings,
-            &segment.translation,
+            &texto,
             models_dir,
             target,
             &dub_path(path, &segment.id),
@@ -563,6 +584,7 @@ pub fn generate_dub(
 
 /// Genera (o regenera) el doblaje de un único segmento y devuelve la ruta del
 /// WAV resultante. Útil para la regeneración por segmento del `EditPanel`.
+/// Usa la traducción si está, si no el texto origen.
 pub fn generate_dub_segment(
     path: &Path,
     seg_id: &str,
@@ -574,12 +596,11 @@ pub fn generate_dub_segment(
         .iter()
         .find(|s| s.id == seg_id)
         .ok_or_else(|| format!("No existe el segmento «{seg_id}»."))?;
-    if segment.translation.trim().is_empty() {
-        return Err("El segmento no tiene traducción que doblar.".to_string());
-    }
+    let texto = texto_a_doblar(segment)
+        .ok_or_else(|| "El segmento no tiene texto ni traducción que doblar.".to_string())?;
     let out = dub_path(path, seg_id);
     let target = (segment.end - segment.start).max(0.0);
-    crate::tts::synth_segment(settings, &segment.translation, models_dir, target, &out)?;
+    crate::tts::synth_segment(settings, &texto, models_dir, target, &out)?;
     Ok(out)
 }
 
@@ -880,20 +901,23 @@ pub fn render_presentation(
         );
     }
 
-    // Auto-doblaje: sintetiza los WAV de los segmentos que tienen traducción
-    // y aún no tienen audio. Los segmentos sin traducción quedan en silencio.
+    // Auto-doblaje: sintetiza los WAV de los segmentos que tengan texto
+    // (translation con prioridad, source como fallback) y aún no tengan
+    // audio. Los segmentos sin texto quedan en silencio.
     let pendientes: Vec<&Segment> = segments
         .iter()
-        .filter(|s| !s.translation.trim().is_empty() && !dub_path(path, &s.id).is_file())
+        .filter(|s| texto_a_doblar(s).is_some() && !dub_path(path, &s.id).is_file())
         .collect();
     let total_pendientes = pendientes.len();
     let total_etapas = total_pendientes + 2;
     on_progress(0, total_etapas);
     for (i, s) in pendientes.iter().enumerate() {
         let target = (s.end - s.start).max(0.0);
+        let texto = texto_a_doblar(s)
+            .expect("filtrado por is_some garantiza texto no vacío");
         crate::tts::synth_segment(
             settings,
-            &s.translation,
+            &texto,
             models_dir,
             target,
             &dub_path(path, &s.id),

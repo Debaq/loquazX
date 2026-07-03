@@ -64,7 +64,12 @@ function EditPanel({
 
   const voces = engine === "piper" ? piperVoices : edgeVoices;
   const sinVoces = voces.length === 0;
-  const sinTraduccion = segment.translation.trim().length === 0;
+  // Habilita el botón apenas haya un texto (origen o traducción) para doblar.
+  // En el modo presentación es habitual narrar el PDF en su idioma original
+  // sin traducir; en el modo video la traducción suele estar y manda.
+  const sinTexto =
+    segment.translation.trim().length === 0 &&
+    segment.source.trim().length === 0;
 
   async function generar() {
     setGenerating(true);
@@ -183,16 +188,19 @@ function EditPanel({
           <button
             type="button"
             onClick={generar}
-            disabled={generating || sinVoces || !voice || sinTraduccion}
+            disabled={generating || sinVoces || !voice || sinTexto}
           >
             {generating ? "Generando…" : hasDub ? "Regenerar" : "Generar audio"}
           </button>
         </div>
 
-        {sinTraduccion && (
-          <div className="edit__hint">Traduce el segmento antes de doblarlo.</div>
+        {sinTexto && (
+          <div className="edit__hint">
+            Escribe el texto origen o la traducción del segmento antes de
+            doblarlo.
+          </div>
         )}
-        {!sinTraduccion && sinVoces && engine === "piper" && (
+        {!sinTexto && sinVoces && engine === "piper" && (
           <div className="edit__hint">
             No hay voces Piper del idioma de salida (
             <strong>
@@ -204,7 +212,7 @@ function EditPanel({
             (online) arriba.
           </div>
         )}
-        {!sinTraduccion && sinVoces && engine === "edge-tts" && (
+        {!sinTexto && sinVoces && engine === "edge-tts" && (
           <div className="edit__edit-hint-row">
             <div className="edit__hint">
               {loadingEdgeVoices
