@@ -439,6 +439,19 @@ async fn renderizar_presentacion(
     .map_err(|e| format!("El render de la presentación se interrumpió: {e}"))?
 }
 
+// ADR-010: regenera las imágenes de las páginas a partir del PDF persistido.
+// Útil cuando la auto-recuperación del `open` no aplicó (porque el PDF se
+// perdió) y el usuario no quiere reimportar todavía. Asíncrono por la misma
+// razón que `importar_pdf`: la rasterización puede tardar.
+#[tauri::command]
+async fn regenerar_imagenes_pdf(path: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::regenerate_slide_pages(&PathBuf::from(path))
+    })
+    .await
+    .map_err(|e| format!("La regeneración se interrumpió: {e}"))?
+}
+
 /// Shims públicos para tests de integración que necesitan tocar el pipeline
 /// interno sin pasar por la UI ni por `tauri::test`. Marcados con el prefijo
 /// `__test_` para que sea evidente que no son parte de la API de cara al
@@ -490,6 +503,10 @@ pub mod __test {
         super::project::render_presentation(path, on_progress)
     }
 
+    pub fn regenerar_imagenes_pdf(path: &Path) -> Result<super::project::Project, String> {
+        super::project::regenerate_slide_pages(path)
+    }
+
     pub fn path_buf(p: &str) -> PathBuf {
         PathBuf::from(p)
     }
@@ -539,6 +556,7 @@ pub fn run() {
             importar_audio_presentacion,
             importar_segmentos_json,
             renderizar_presentacion,
+            regenerar_imagenes_pdf,
             forma_onda,
             url_media
         ])

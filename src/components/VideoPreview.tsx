@@ -16,6 +16,8 @@ interface Props {
   segments: Segment[];
   /** Id del segmento activo. */
   selectedId: string | null;
+  /** Regenera las imágenes del PDF a partir del PDF persistido (ADR-010). */
+  onRegenerarSlides?: () => void;
 }
 
 /** Devuelve la página del PDF que debe mostrarse para el segmento seleccionado
@@ -40,6 +42,7 @@ function VideoPreview({
   slidesPageCount,
   segments,
   selectedId,
+  onRegenerarSlides,
 }: Props) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -74,8 +77,7 @@ function VideoPreview({
       .then(setSlideSrc)
       .catch((e) =>
         setSlideError(
-          `No se pudo cargar la página ${page}: ${e}\n\nSi el proyecto es de una versión \
-anterior, vuelve a importar el PDF para regenerar las imágenes.`,
+          `No se pudo cargar la página ${page}: ${e}`,
         ),
       );
   }, [videoPath, slidesPath, projectPath, slidesPageCount, page]);
@@ -117,6 +119,15 @@ anterior, vuelve a importar el PDF para regenerar las imágenes.`,
             <div className="preview__hint">
               {slideError ?? `Cargando página ${page}…`}
             </div>
+            {slideError && onRegenerarSlides && (
+              <button
+                type="button"
+                className="preview__btn"
+                onClick={onRegenerarSlides}
+              >
+                Regenerar imágenes
+              </button>
+            )}
           </div>
         )}
         {slideError && slideSrc && (

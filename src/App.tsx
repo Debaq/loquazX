@@ -595,6 +595,21 @@ function App() {
     }
   }
 
+  // ADR-010: regenera las imágenes del PDF a partir del PDF persistido.
+  // Útil cuando la auto-recuperación del `open` no aplicó (PDF perdido,
+  // error al importar) y el usuario no quiere reimportar todavía.
+  async function regenerarImagenesPdf() {
+    if (!project) return;
+    try {
+      const proyecto = await invoke<Project>("regenerar_imagenes_pdf", {
+        path: project.path,
+      });
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Regenerar imágenes", kind: "error" });
+    }
+  }
+
   return (
     <div className="app">
       <TopBar
@@ -650,6 +665,7 @@ function App() {
             slidesPageCount={project?.slides_page_count ?? null}
             segments={segments}
             selectedId={selectedId}
+            onRegenerarSlides={regenerarImagenesPdf}
           />
         </main>
         <aside className="app__right">

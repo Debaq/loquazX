@@ -710,6 +710,34 @@ pub fn import_audio_presentation(path: &Path, audio: &Path) -> Result<Project, S
     Ok(build_project(path, manifest, segments))
 }
 
+/// Regenera las imágenes de las páginas del PDF a partir del PDF persistido
+/// en el proyecto (ADR-010). Pensado para recuperar proyectos donde la
+/// auto-recuperación del `open` no aplicó (PDF perdido, error transitorio al
+/// importar) o donde el usuario quiere forzar la regeneración. Falla con un
+/// mensaje claro si no hay un PDF configurado o si el PDF ya no existe en
+/// disco; en ese caso la única salida es reimportar.
+pub fn regenerate_slide_pages(path: &Path) -> Result<Project, String> {
+    let manifest: Manifest = read_json(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    let slides = manifest
+        .slides
+        .as_ref()
+        .ok_or_else(|| "El proyecto no tiene un PDF importado.".to_string())?;
+    let pdf_abs = path.join(&slides.file);
+    if !pdf_abs.is_file() {
+        return Err(format!(
+            "El PDF del proyecto no existe en disco: {}. Vuelve a importar el PDF.",
+            pdf_abs.display()
+        ));
+    }
+    let pages_dir = path.join("slides").join("pages");
+    instalar_paginas_rasterizadas(&pdf_abs, &pages_dir)?;
+    let segments = read_json::<SegmentsFile>(&path.join("segments.json"))
+        .unwrap_or_default()
+        .segments;
+    Ok(build_project(path, manifest, segments))
+}
+
 /// Esquema del JSON externo de import de segmentos (ADR-010). El usuario
 /// provee `start`, `end`, `source` y opcionalmente `slide`; la app asigna
 /// `id = uuid` y deja `translation = ""` para que el flujo de traducción los
