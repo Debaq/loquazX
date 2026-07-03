@@ -10,7 +10,6 @@ import {
   Languages,
   Cpu,
   Loader,
-  FileText,
   Music,
   FilePlus2,
   Clapperboard,
@@ -35,6 +34,7 @@ interface Props {
   onNew: () => void;
   onOpen: () => void;
   onSave: () => void;
+  /** Importa un video o un PDF como fuente del proyecto (ADR-002 / ADR-010). */
   onImportVideo: () => void;
   onExtractAudio: () => void;
   onTranscribe: () => void;
@@ -42,8 +42,6 @@ interface Props {
   onImportTranslation: () => void;
   onTranslateLocal: () => void;
   onOpenModels: () => void;
-  /** Importa un PDF de fondo para el modo presentación (ADR-010). */
-  onImportPdf: () => void;
   /** Importa un audio arbitrario cuando no hay video (ADR-010). */
   onImportAudioPresentation: () => void;
   /** Importa segmentos desde un JSON externo (ADR-010). */
@@ -85,7 +83,6 @@ function TopBar({
   onImportTranslation,
   onTranslateLocal,
   onOpenModels,
-  onImportPdf,
   onImportAudioPresentation,
   onImportSegmentsJson,
   onExportPresentation,
@@ -133,8 +130,8 @@ function TopBar({
           data-step="2"
           onClick={onImportVideo}
           disabled={!canImportVideo}
-          title="2. Importar video"
-          aria-label="Paso 2: Importar video"
+          title="2. Importar video o PDF"
+          aria-label="Paso 2: Importar video o PDF"
         >
           <Film size={ICON_SIZE} />
         </button>
@@ -272,17 +269,7 @@ function TopBar({
           <Cpu size={ICON_SIZE} />
           <span>{modelLevel}</span>
         </button>
-        {/* ADR-010: herramientas del modo presentación (PDF + segmentos). */}
-        <button
-          type="button"
-          className="topbar__btn"
-          onClick={onImportPdf}
-          disabled={!canSave}
-          title="Importar PDF de fondo (presentación)"
-          aria-label="Importar PDF de fondo"
-        >
-          <FileText size={ICON_SIZE} />
-        </button>
+        {/* ADR-010: herramientas del modo presentación (audio + segmentos). */}
         <button
           type="button"
           className="topbar__btn"
@@ -290,7 +277,7 @@ function TopBar({
           disabled={!canSave || !!hasAudio}
           title={
             hasAudio
-              ? "El proyecto ya tiene audio. Reimporta el video o PDF para reemplazarlo."
+              ? "El proyecto ya tiene audio. Reimporta la fuente para reemplazarlo."
               : "Importar audio arbitrario para el modo presentación"
           }
           aria-label="Importar audio"

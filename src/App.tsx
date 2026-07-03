@@ -282,12 +282,34 @@ function App() {
   async function importarVideo() {
     if (!project) return;
     const ruta = await open({
-      title: "Importar video",
+      title: "Importar video o PDF",
       filters: [
         { name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "avi"] },
+        { name: "PDF", extensions: ["pdf"] },
       ],
     });
     if (!ruta) return;
+    try {
+      const proyecto = await importarFuente(ruta);
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Importar", kind: "error" });
+    }
+  }
+
+  // Despacha al backend correcto según la extensión del archivo seleccionado
+  // (ADR-002 para video, ADR-010 para PDF). Devuelve el `Project` actualizado.
+  async function importarFuente(ruta: string): Promise<Project> {
+    if (!project) throw new Error("No hay proyecto abierto.");
+    const extension = ruta.split(".").pop()?.toLowerCase() ?? "";
+    if (extension === "pdf") {
+      return importarPdf(ruta);
+    }
+    return importarVideoSeleccionado(ruta);
+  }
+
+  async function importarVideoSeleccionado(ruta: string): Promise<Project> {
+    if (!project) throw new Error("No hay proyecto abierto.");
     // ADR-002: el video se copia o se referencia según preferencia del usuario.
     const copiar = await ask(
       "¿Copiar el video dentro del proyecto?\n\nCopiar: el proyecto queda autocontenido.\nReferenciar: se usa la ruta original sin duplicar el archivo.",
@@ -298,17 +320,27 @@ function App() {
         cancelLabel: "Solo referenciar",
       },
     );
-    try {
-      const proyecto = await invoke<Project>("importar_video", {
-        path: project.path,
-        video: ruta,
-        copiar,
-      });
-      // Solo se actualiza el proyecto: los segmentos locales sin guardar se conservan.
-      setProject(proyecto);
-    } catch (e) {
-      await message(String(e), { title: "Importar video", kind: "error" });
+    return await invoke<Project>("importar_video", {
+      path: project.path,
+      video: ruta,
+      copiar,
+    });
+  }
+
+  async function importarPdf(ruta: string): Promise<Project> {
+    if (!project) throw new Error("No hay proyecto abierto.");
+    const pageCount = await invoke<number>("conteo_paginas_pdf", { pdf: ruta });
+    const continuar = await ask(
+      `El PDF tiene ${pageCount} páginas. Se copiará al proyecto.\n\n¿Continuar?`,
+      { title: "Importar PDF", kind: "info" },
+    );
+    if (!continuar) {
+      throw new Error("Importación cancelada.");
     }
+    return await invoke<Project>("importar_pdf", {
+      path: project.path,
+      pdf: ruta,
+    });
   }
 
   async function extraerAudio() {
@@ -481,32 +513,6 @@ function App() {
     setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, ...cambios } : s)));
   }
 
-  // ADR-010: importa un PDF como fondo del modo presentación. Lee el conteo
-  // de páginas con un comando aparte para validar antes de confirmar.
-  async function importarPdf() {
-    if (!project) return;
-    const ruta = await open({
-      title: "Importar PDF de fondo",
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-    if (!ruta) return;
-    try {
-      const pageCount = await invoke<number>("conteo_paginas_pdf", { pdf: ruta });
-      const continuar = await ask(
-        `El PDF tiene ${pageCount} páginas. Se copiará al proyecto.\n\n¿Continuar?`,
-        { title: "Importar PDF", kind: "info" },
-      );
-      if (!continuar) return;
-      const proyecto = await invoke<Project>("importar_pdf", {
-        path: project.path,
-        pdf: ruta,
-      });
-      setProject(proyecto);
-    } catch (e) {
-      await message(String(e), { title: "Importar PDF", kind: "error" });
-    }
-  }
-
   // ADR-010: importa un audio arbitrario cuando el proyecto no tiene video.
   async function importarAudioPresentacion() {
     if (!project) return;
@@ -616,7 +622,6 @@ function App() {
         onImportTranslation={importarTraduccion}
         onTranslateLocal={traducirLocal}
         onOpenModels={() => setShowModels(true)}
-        onImportPdf={importarPdf}
         onImportAudioPresentation={importarAudioPresentacion}
         onImportSegmentsJson={importarSegmentosJson}
         onExportPresentation={renderizarPresentacion}
