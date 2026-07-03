@@ -49,6 +49,17 @@ impl MediaServer {
         })
     }
 
+    /// Puerto efímero en el que escucha el servidor.
+    pub fn puerto(&self) -> u16 {
+        self.port
+    }
+
+    /// Token de la sesión (UUID simple). Lo expone para tests E2E que
+    /// necesitan componer la URL manualmente.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
     /// Registra el archivo en la allowlist y devuelve su URL local.
     pub fn url_for(&self, file: &Path) -> Result<String, String> {
         let canonical = file
@@ -68,6 +79,32 @@ impl MediaServer {
             .map_err(|_| "Allowlist del servidor de media envenenada".to_string())?
             .insert(canonical);
         Ok(url)
+    }
+}
+
+/// Handle opaco para tests E2E: mantiene el `MediaServer` vivo mientras el
+/// test hace peticiones HTTP contra él. No se usa en producción (la app
+/// guarda el server en el estado de Tauri).
+pub struct MediaServerHandle {
+    pub port: u16,
+    pub token: String,
+    // Mantener vivo al server: si se dropea, el thread acceptor sigue vivo
+    // porque tiene su propio `Arc<Mutex<HashSet>>`, pero la convención
+    // idiomática es mover el owner junto con el handle.
+    pub inner: MediaServer,
+}
+
+impl MediaServerHandle {
+    pub fn puerto(&self) -> u16 {
+        self.port
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub fn url_for(&self, file: &Path) -> Result<String, String> {
+        self.inner.url_for(file)
     }
 }
 
@@ -183,6 +220,10 @@ fn content_type(path: &Path) -> &'static str {
         Some("avi") => "video/x-msvideo",
         Some("wav") => "audio/wav",
         Some("mp3") => "audio/mpeg",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
         _ => "application/octet-stream",
     }
 }

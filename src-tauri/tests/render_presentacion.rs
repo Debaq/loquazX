@@ -187,4 +187,95 @@ fn render_presentacion_e2e() {
             png.display()
         );
     }
+
+    // El MediaServer debe poder servir las páginas rasterizadas (es el camino
+    // que usa el frontend para el preview; si falla aquí, el preview falla en
+    // la app). Verificamos con la página 1.
+    media_server_sirve_pagina(&pages.join("page-1.png"));
+
+    // Reproduce el flujo exacto del frontend: dado un `Project` recién
+    // abierto, construir la ruta `${project.path}/slides/pages/page-1.png`
+    // como hace `VideoPreview`, y pedir la URL al MediaServer.
+    let project_state = loquazx_lib::__test::abrir(&project).expect("abrir proyecto");
+    eprintln!("[debug] project.path       = {:?}", project_state.path);
+    eprintln!("[debug] project.slides_path = {:?}", project_state.slides_path);
+    eprintln!("[debug] pages/page-1.png existe = {}", pages.join("page-1.png").is_file());
+    let ruta_frontend = format!(
+        "{}/slides/pages/page-1.png",
+        project_state.path
+    );
+    eprintln!("[debug] ruta construida por el frontend = {ruta_frontend}");
+    eprintln!("[debug] ruta construida existe en disco = {}", PathBuf::from(&ruta_frontend).is_file());
+    media_server_sirve_pagina(&PathBuf::from(&ruta_frontend));
+}
+
+/// Variante del E2E con un path que tiene espacios y acentos, que es donde
+/// sospechamos que el bug se manifiesta. Si este test pasa pero el del usuario
+/// falla, el problema es específico a su entorno (no reproducible aquí).
+#[test]
+#[ignore]
+fn render_presentacion_path_con_espacios_y_acentos() {
+    if !ffmpeg_disponible() || !poppler_disponible() {
+        eprintln!("Falta ffmpeg, pdftoppm o pdfinfo; saltando.");
+        return;
+    }
+    let dir = tempfile::Builder::new()
+        .prefix("demo con espacios y acentos ñ ")
+        .tempdir()
+        .unwrap();
+    let project = dir.path().join("proyecto.lqzx");
+    let _ = loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en")
+        .expect("crear proyecto");
+
+    let pdf = generar_pdf(dir.path());
+    let _ = loquazx_lib::__test::importar_pdf(&project, &pdf).expect("importar PDF");
+
+    let project_state = loquazx_lib::__test::abrir(&project).expect("abrir proyecto");
+    eprintln!("[debug-acentos] project.path = {:?}", project_state.path);
+    let ruta_frontend = format!(
+        "{}/slides/pages/page-1.png",
+        project_state.path
+    );
+    eprintln!("[debug-acentos] ruta frontend = {ruta_frontend}");
+    assert!(
+        PathBuf::from(&ruta_frontend).is_file(),
+        "imagen no existe en disco bajo path con espacios/acentos"
+    );
+    media_server_sirve_pagina(&PathBuf::from(&ruta_frontend));
+}
+
+/// Verifica que el `MediaServer` puede registrar y servir un archivo por HTTP.
+/// Es el mismo flujo que `VideoPreview` usa en el frontend para mostrar la
+/// diapositiva activa.
+fn media_server_sirve_pagina(png: &std::path::Path) {
+    use std::io::{Read, Write};
+    let server = loquazx_lib::__test::iniciar_media_server().expect("iniciar MediaServer");
+    let url = server
+        .url_for(png)
+        .unwrap_or_else(|e| panic!("url_for falló para {}: {e}", png.display()));
+    let path = url.strip_prefix("http://127.0.0.1:").unwrap();
+    let Some(target) = path.find('/').map(|i| &path[i..]) else {
+        panic!("URL malformada: {url}");
+    };
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", server.puerto())).unwrap();
+    stream
+        .write_all(format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    assert!(
+        head.contains("200 OK"),
+        "el MediaServer no devolvió 200 para {}: {head}",
+        png.display()
+    );
+    assert!(
+        head.contains("Content-Type: image/png"),
+        "Content-Type inesperado: {head}"
+    );
+    let body = &raw[split + 4..];
+    // Cabecera PNG: 89 50 4E 47.
+    assert_eq!(&body[..4], &[0x89, 0x50, 0x4E, 0x47], "no es un PNG válido");
 }

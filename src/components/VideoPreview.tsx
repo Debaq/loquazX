@@ -62,7 +62,9 @@ function VideoPreview({
   }, [videoPath]);
 
   // Modo presentación: imagen de la página activa, servida por el `MediaServer`
-  // local (ADR-005). Se recarga cuando cambia la página o el proyecto.
+  // local (ADR-005). Se recarga cuando cambia la página o el proyecto. Usa el
+  // comando dedicado `url_slide` para evitar construir el path en el frontend
+  // (antes daba error "no existe el fichero" cuando había alguna diferencia).
   const page = paginaActiva(segments, selectedId);
   useEffect(() => {
     setSlideSrc(null);
@@ -72,8 +74,7 @@ function VideoPreview({
       setSlideError(`Página ${page} fuera de rango (1–${slidesPageCount}).`);
       return;
     }
-    const pngPath = `${projectPath}/slides/pages/page-${page}.png`;
-    invoke<string>("url_media", { path: pngPath })
+    invoke<string>("url_slide", { projectPath, page })
       .then(setSlideSrc)
       .catch((e) =>
         setSlideError(

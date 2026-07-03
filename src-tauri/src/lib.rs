@@ -95,7 +95,35 @@ fn url_media(
     server: tauri::State<media_server::MediaServer>,
     path: String,
 ) -> Result<String, String> {
-    server.url_for(std::path::Path::new(&path))
+    let p = std::path::Path::new(&path);
+    eprintln!("[loquazX] url_media: {p:?}");
+    let result = server.url_for(p);
+    if let Err(ref e) = result {
+        eprintln!("[loquazX] url_media falló: {e}");
+    }
+    result
+}
+
+/// Devuelve la URL local de una página rasterizada del PDF (ADR-010). Arma el
+/// path internamente a partir del proyecto y el número de página para que el
+/// frontend no tenga que componerlo a mano (antes fallaba con "no existe el
+/// fichero" porque el path construido en JS no coincidía con el real).
+#[tauri::command]
+fn url_slide(
+    server: tauri::State<media_server::MediaServer>,
+    project_path: String,
+    page: u32,
+) -> Result<String, String> {
+    let png = std::path::Path::new(&project_path)
+        .join("slides")
+        .join("pages")
+        .join(format!("page-{page}.png"));
+    eprintln!("[loquazX] url_slide: {png:?}");
+    let result = server.url_for(&png);
+    if let Err(ref e) = result {
+        eprintln!("[loquazX] url_slide falló: {e}");
+    }
+    result
 }
 
 // ADR-007: lista los niveles de modelo y su estado de descarga.
@@ -507,6 +535,18 @@ pub mod __test {
         super::project::regenerate_slide_pages(path)
     }
 
+    /// Crea un `MediaServer` y devuelve un handle de testing con su puerto.
+    /// Permite a los tests E2E verificar que las páginas rasterizadas se
+    /// sirven correctamente por HTTP, que es el camino que usa el frontend.
+    pub fn iniciar_media_server() -> Result<super::media_server::MediaServerHandle, String> {
+        let server = super::media_server::MediaServer::start()?;
+        Ok(super::media_server::MediaServerHandle {
+            port: server.puerto(),
+            token: server.token().to_string(),
+            inner: server,
+        })
+    }
+
     pub fn path_buf(p: &str) -> PathBuf {
         PathBuf::from(p)
     }
@@ -558,7 +598,8 @@ pub fn run() {
             renderizar_presentacion,
             regenerar_imagenes_pdf,
             forma_onda,
-            url_media
+            url_media,
+            url_slide
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
