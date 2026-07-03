@@ -35,6 +35,8 @@ Requisitos en tiempo de ejecución:
 
 - `ffmpeg` instalado y disponible en el `PATH` (ADR-003). En Linux está en los
   repositorios oficiales de todas las distribuciones.
+- `pdftoppm` y `pdfinfo` (poppler) para el modo presentación (ADR-010). En
+  Linux vienen en el paquete `poppler-utils`.
 - Un modelo de whisper para transcribir. La app lo descarga desde el gestor
   «Modelo» (ADR-007) y lo guarda de forma persistente; no hace falta conseguirlo
   a mano. Conexión a internet solo para esa descarga; `base` es buen punto de
@@ -57,6 +59,10 @@ La documentación detallada se irá agregando en `docs/` a medida que las funcio
 ### Modelo de transcripción (ADR-007)
 
 El botón «Modelo» abre el gestor de modelos whisper. Cada nivel (`tiny`, `base`, `small`, `medium`, `large-v3`) puede descargarse desde Hugging Face con barra de progreso; el archivo queda guardado en el directorio de datos de la app y se reutiliza siempre. También puedes importar un `ggml-*.bin` propio o borrar modelos. La transcripción usa el nivel marcado «en uso», sin pedir un archivo cada vez.
+
+### Modo presentación (ADR-010)
+
+Un proyecto puede traer, además del video fuente, un **PDF de fondo** y segmentos con `slide: number` (1‑based). El botón «Importar PDF» copia el PDF bajo `slides/` y pre‑cuenta las páginas; el botón «Importar audio» acepta un audio arbitrario cuando no hay video; «Importar segmentos JSON» levanta un JSON con `[{start, end, slide, source}]` y rellena los segmentos (sobrescribe tras confirmar). Tras traducir y doblar los segmentos como siempre, «Exportar video» produce el mp4 final (`exports/<nombre>.mp4`) sincronizando páginas del PDF con los huecos `[start, end)` y mezclando los WAV de `runs/dub/`.
 
 ### Traducción (ADR-006)
 
