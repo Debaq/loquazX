@@ -240,7 +240,7 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 **Contexto:** Feature pedida por Nicolás tras el merge del doblaje (PR #17): un usuario con un PDF y los textos de la charla debería poder armar un video narrado en otro idioma sin pasar por grabar video. La idea es que un proyecto `.lqzx` pueda traer un PDF de fondo además (o en lugar) del video, y que cada segmento lleve el número de página del PDF que se muestra durante su `start`/`end`. Issue #18.
 
-**Aporte de la IA:** Borrador del ADR-010 (extensión del formato de proyecto: campo `slides` opcional en el manifiesto y `slide` opcional en `Segment`; dependencia nueva asumida `pdftoppm` de Poppler). Nuevo módulo Rust `presentacion.rs` que rasteriza el PDF con `pdftoppm`, arma el `concat.txt` de ffmpeg con bloques de página y mezcla los WAV de `runs/dub/` con silencios en los huecos. Comandos Tauri `importar_pdf`/`conteo_paginas_pdf`/`importar_audio_presentacion`/`importar_segmentos_json`/`renderizar_presentacion`. Frontend: tres botones nuevos en la `TopBar` (Importar PDF, Importar audio, Importar segmentos JSON, Exportar video), `EditPanel` con campo numérico de slide, `VideoPreview` mostrando la página del PDF activa cuando no hay video, y pista "Slides" en la `Timeline`.
+**Aporte de la IA:** Borrador del ADR-010 (extensión del formato de proyecto: campo `slides` opcional en el manifiesto y `slide` opcional por segmento). Asume ffmpeg (ADR-003) y suma pdftoppm y pdfinfo de poppler como dependencia externa para el render. Nuevo módulo Rust `presentacion.rs` que rasteriza el PDF con `pdftoppm`, concatena los WAV de doblaje de `runs/dub/` con silencios en los huecos (filter `concat` + `atrim`/`asetpts` para acotar cada entrada), y compone el mp4 final con libx264 + aac. Filtro `scale=trunc(iw/2)*2:trunc(ih/2)*2` para tolerar PDFs no múltiplos de 2 y `-movflags +faststart` para que abra rápido al servirse por el `MediaServer` (ADR-005). Comandos Tauri `importar_pdf` (copia bajo `slides/`, lee `page_count`), `conteo_paginas_pdf` (para validar antes de confirmar), `importar_audio_presentacion` (audio arbitrario sin video, reusa `extract_wav_16k`), `importar_segmentos_json` (importa `{start, end, slide, source}` con `id = uuid` y `translation = ""`) y `renderizar_presentacion` (asíncrono, emite `presentacion:progreso` por etapa). El mp4 queda en `exports/<nombre>.mp4`. Frontend: cuatro botones nuevos en la `TopBar` («Importar PDF» · «Importar audio» · «Importar segmentos JSON» · «Exportar video»), campo numérico «Diapositiva» (1–page_count) en el `EditPanel`, etiqueta `p.N` en la lista de segmentos, y preview del PDF en `VideoPreview` cuando no hay video (muestra la página del segmento seleccionado, con fallback a la última vista o la 1). Test de integración E2E `#[ignore]` en `tests/render_presentacion.rs` que valida el pipeline completo contra `pdftoppm`/`pdfinfo`/`ffmpeg`.
 
 **Decisiones humanas:**
 
@@ -253,6 +253,26 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 **Revisión humana:** Pendiente de revisión en el PR asociado antes de merge. La generación end-to-end del mp4 se valida manualmente con un PDF y un par de segmentos doblados; los tests automáticos cubren utilidades del pipeline de audio y el parseo del JSON de import.
 
 **Commits asociados:** se enlazarán en el PR que cierra #18.
+
+### 2026-07-02 — Recalibración de timings al audio natural (ADR-010)
+
+**Herramienta:** Claude Opus 4.8 (Claude Code)
+
+**Contexto:** Nicolás reportó que en el modo presentación, los `start`/`end` originales hacen que el audio se comprima o se estire (con `atempo`), perdiendo naturalidad. Como el modo presentación tiene control total del tiempo (no hay video que limite), propuso un sistema de recalibración: dejar que el audio dictate la duración de cada segmento. Está usando la API de Microsoft (edge-tts).
+
+**Aporte de la IA:** Refactor de `tts::synth_segment` para aceptar `target_secs: Option<f64>`: si es `Some`, mantiene el comportamiento actual (ajusta con `atempo`); si es `None`, deja el WAV a velocidad natural. Nuevo helper público `compute_recalibrated_timings` separado de la orquestación de TTS para que el cálculo sea testeable de forma determinista. Nuevo comando Tauri `recalibrar_audios` (asíncrono con `spawn_blocking`, emite `recalibrar:progreso` por segmento) que sintetiza cada segmento a velocidad natural, mide la duración y reasigna los `start`/`end` cumulativamente con un gap fijo de 0.2s entre segmentos. Los segmentos sin texto respetan su `start`/`end` original (silencio); los recalibrados van en orden cronológico y se ponen uno tras otro. Antes de modificar, hace un backup único de `segments.json` en `segments.original.json` (para que llamadas subsiguientes sean idempotentes). Comandos Tauri asociados: `restaurar_timings_originales` (lee el backup y restaura) y `tiene_backup_timings` (para que la UI muestre el botón "Restaurar" solo si hay algo que restaurar). Frontend: dos botones nuevos en la `TopBar` ("Recalibrar" con icono `Sliders`, "Restaurar" con icono `RotateCcw` este último condicional). Tres tests unitarios nuevos del cálculo + un test E2E que cubre backup/restore. Documentación ampliada en ADR-010 con la subsección "Recalibración de timings" explicando la decisión, el flujo y los trade-offs (en particular: el mp4 recalibrado tiene duración = suma de audios + gaps + silencios, distinta del mp4 ajustado al timeline original).
+
+**Decisiones humanas:**
+
+- Recalibrar deja que el audio dictate la duración, no al revés: la calidad de la voz es la prioridad.
+- Gap fijo de 0.2s entre segmentos (suficiente para una respiración natural, no tan grande como para alargar el video innecesariamente).
+- Segmentos sin texto respetan su `start`/`end` original (silencio en su lugar, no se mueven).
+- Backup único en `segments.original.json`: la primera recalibración es la "original"; las siguientes son idempotentes.
+- La recalibración NO modifica los `runs/dub/*.wav` que ya estén en disco: si el usuario quiere re-doblar con los timings viejos, regenera manualmente.
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge. La verificación end-to-end con TTS real queda del lado del usuario (edge-tts con su cuenta de Microsoft); los tests automáticos cubren el cálculo de timings y el flujo de backup/restore.
+
+**Commits asociados:** se enlazarán en el PR asociado.
 
 ---
 

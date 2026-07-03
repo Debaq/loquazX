@@ -94,3 +94,28 @@ El mp4 final va a `exports/<nombre>.mp4` (paralelo a `traduccion-solicitud.json`
 - Generación de PDF a partir de las imágenes del proyecto (dirección opuesta, sin demanda).
 - Multi‑idioma de salida en la exportación (se sigue doblando solo al `target_language`).
 - Edición visual del `slide` arrastrando bloques en la `Timeline` (queda como mejora futura; en este PR se edita por segmento desde el `EditPanel`).
+
+## Recalibración de timings
+
+El modo presentación ofrece opcionalmente un flujo de **recalibración**: dejar que la duración natural del audio sintetizado dicte los `start`/`end` de los segmentos en lugar de comprimir/estirar el audio para encajar en los timings originales (vía `atempo`, ADR-009).
+
+### Por qué
+
+Cuando los `start`/`end` originales son aproximados (por ejemplo, calculados a mano o tomados de un video de referencia), comprimir el audio degrada la naturalidad de la voz. Un hablante natural dice cada frase a una velocidad propia; obligarlo a 1.5x o 0.7x para encajar en un hueco arbitrario se nota. La recalibración invierte la ecuación: el audio es la fuente de verdad, y los timings se ajustan a él.
+
+### Cómo
+
+1. El usuario hace clic en **«Recalibrar»** (icono `Sliders` en la barra superior).
+2. El backend sintetiza cada segmento con texto a velocidad natural (`synth_segment(target_secs = None)` — el WAV no se ajusta con `atempo`).
+3. Lee la duración de cada WAV natural.
+4. Calcula los nuevos `start`/`end` cumulativos con `compute_recalibrated_timings`:
+   - Los segmentos recalibrados van en orden cronológico (por `start` original) y se ponen uno tras otro con un gap fijo de `0.2s` entre ellos.
+   - Los segmentos sin texto (o cuya síntesis falló) respetan su `start` original; el cursor salta hacia adelante para acomodarlos sin solapamiento.
+5. Persiste el `segments.json` actualizado.
+6. Antes de modificar, copia `segments.json` a `segments.original.json` (solo si no existe uno). Esto da un único punto de restauración: «Restaurar timings» (icono `RotateCcw`).
+
+### Trade-offs
+
+- El mp4 final queda con la duración total = suma de las duraciones naturales de los audios + gaps + silencios de los segmentos sin texto. Esto es diferente del mp4 «ajustado al timeline original» que produce el render normal.
+- Si el usuario edita un texto después de recalibrar, los timings ya no coinciden con la nueva duración del audio. Tendrá que recalibrar de nuevo (o restaurar primero y doblar manualmente).
+- Los `runs/dub/*.wav` quedan a velocidad natural. El comando de doblaje individual (`Generar audio` en el `EditPanel`) sigue produciendo audio ajustado al `end - start` original, no a la duración natural.

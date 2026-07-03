@@ -13,6 +13,8 @@ import {
   Music,
   FilePlus2,
   Clapperboard,
+  Sliders,
+  RotateCcw,
 } from "lucide-react";
 import { LANGUAGES } from "../languages";
 
@@ -58,6 +60,18 @@ interface Props {
   renderingPresentation: boolean;
   /** Avance del render de presentación, si está corriendo. */
   renderProgress?: { etapa: number; total: number } | null;
+  /** Recalibra los timings de los segmentos a la duración natural del audio (ADR-010). */
+  onRecalibrarAudios: () => void;
+  /** `true` cuando hay al menos un segmento con texto para recalibrar. */
+  canRecalibrar: boolean;
+  /** `true` mientras se recalibra. */
+  recalibrating: boolean;
+  /** Avance de la recalibración. */
+  recalProgress?: { hechos: number; total: number } | null;
+  /** Restaura los timings originales desde el backup. */
+  onRestaurarTimings: () => void;
+  /** `true` cuando existe backup de timings originales. */
+  hasTimingsBackup: boolean;
 }
 
 const ICON_SIZE = 18;
@@ -94,6 +108,12 @@ function TopBar({
   segmentsToDubCount,
   renderingPresentation,
   renderProgress,
+  onRecalibrarAudios,
+  canRecalibrar,
+  recalibrating,
+  recalProgress,
+  onRestaurarTimings,
+  hasTimingsBackup,
 }: Props) {
   return (
     <header className="topbar">
@@ -322,6 +342,39 @@ function TopBar({
           )}
           <span>Exportar video</span>
         </button>
+        <button
+          type="button"
+          className="topbar__btn topbar__btn--label"
+          onClick={onRecalibrarAudios}
+          disabled={!canRecalibrar || recalibrating || renderingPresentation}
+          title={
+            recalibrating
+              ? recalProgress
+                ? `Recalibrando… (${recalProgress.hechos}/${recalProgress.total})`
+                : "Recalibrando…"
+              : "Recalibra los timings a la duración natural del audio"
+          }
+          aria-label="Recalibrar audios"
+        >
+          {recalibrating ? (
+            <Loader size={ICON_SIZE} className="topbar__spin" />
+          ) : (
+            <Sliders size={ICON_SIZE} />
+          )}
+          <span>Recalibrar</span>
+        </button>
+        {hasTimingsBackup && (
+          <button
+            type="button"
+            className="topbar__btn"
+            onClick={onRestaurarTimings}
+            disabled={recalibrating || renderingPresentation}
+            title="Restaura los start/end originales (antes de la última recalibración)"
+            aria-label="Restaurar timings originales"
+          >
+            <RotateCcw size={ICON_SIZE} />
+          </button>
+        )}
       </div>
     </header>
   );
