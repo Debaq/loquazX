@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { LANGUAGES } from "../languages";
 import type { DubEngine, EdgeVoice, Segment, VoiceInfo } from "../types";
 
 interface Props {
@@ -23,6 +24,8 @@ interface Props {
   onGenerateSegment: () => Promise<string | null>;
   /** Conteo de páginas del PDF importado (ADR-010); deshabilita el campo slide si es null. */
   slidesPageCount: number | null;
+  /** Idioma de salida del proyecto (código ISO corto). */
+  targetLanguage: string;
 }
 
 function EditPanel({
@@ -40,6 +43,7 @@ function EditPanel({
   existingDubUrl,
   onGenerateSegment,
   slidesPageCount,
+  targetLanguage,
 }: Props) {
   const [generating, setGenerating] = useState(false);
   const [dubUrl, setDubUrl] = useState<string | null>(null);
@@ -188,9 +192,34 @@ function EditPanel({
         {sinTraduccion && (
           <div className="edit__hint">Traduce el segmento antes de doblarlo.</div>
         )}
-        {engine === "piper" && sinVoces && !sinTraduccion && (
+        {!sinTraduccion && sinVoces && engine === "piper" && (
           <div className="edit__hint">
-            Descarga una voz Piper del idioma de salida desde «Modelos y voces».
+            No hay voces Piper del idioma de salida (
+            <strong>
+              {LANGUAGES.find((l) => l.code === targetLanguage)?.label ??
+                targetLanguage}
+            </strong>
+            ) descargadas. Abre «Modelos y voces» (icono de CPU en la barra
+            superior) y descarga una. Mientras tanto puedes cambiar a edge-tts
+            (online) arriba.
+          </div>
+        )}
+        {!sinTraduccion && sinVoces && engine === "edge-tts" && (
+          <div className="edit__edit-hint-row">
+            <div className="edit__hint">
+              {loadingEdgeVoices
+                ? "Cargando voces de Microsoft…"
+                : "Las voces edge-tts no se cargan por defecto (requiere red)."}
+            </div>
+            {!loadingEdgeVoices && (
+              <button
+                type="button"
+                className="edit__hint-btn"
+                onClick={onLoadEdgeVoices}
+              >
+                Cargar voces
+              </button>
+            )}
           </div>
         )}
         <div className="edit__hint">

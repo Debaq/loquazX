@@ -289,6 +289,29 @@ textarea:focus, input:focus, select:focus {
   color: var(--text-dim);
   font-style: italic;
 }
+.edit__edit-hint-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.edit__edit-hint-row .edit__hint {
+  flex: 1;
+  min-width: 0;
+}
+.edit__hint-btn {
+  background: var(--accent-dim);
+  color: var(--bg);
+  border: 0;
+  border-radius: 4px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.edit__hint-btn:hover {
+  filter: brightness(1.1);
+}
 .edit__audio {
   width: 100%;
   margin-top: 0.5rem;

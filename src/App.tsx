@@ -696,6 +696,7 @@ function App() {
             existingDubUrl={selectedDubUrl}
             onGenerateSegment={generarDoblajeSegmento}
             slidesPageCount={project?.slides_page_count ?? null}
+            targetLanguage={targetLanguage}
           />
         </aside>
       </div>
