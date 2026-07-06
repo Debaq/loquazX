@@ -128,3 +128,11 @@ export interface RenderReport {
   output: string;
   duration_secs: number;
 }
+
+/** Resultado de aplicar las duraciones reales de los WAV a los segmentos
+ * (ADR-010): cuántos segmentos recalibrados vs cuántos quedaron sin
+ * audio (silencio alineado al cursor). */
+export interface RecalibrationReport {
+  recalibrated: number;
+  kept: number;
+}

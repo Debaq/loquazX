@@ -107,8 +107,15 @@ fn render_presentacion_e2e() {
 
     // Verifica que las páginas se rasterizaron al importar.
     for n in 1..=3 {
-        let png = project.join("slides").join("pages").join(format!("page-{n}.png"));
-        assert!(png.is_file(), "falta la página rasterizada: {}", png.display());
+        let png = project
+            .join("slides")
+            .join("pages")
+            .join(format!("page-{n}.png"));
+        assert!(
+            png.is_file(),
+            "falta la página rasterizada: {}",
+            png.display()
+        );
     }
 
     // Importa los segmentos.
@@ -155,8 +162,9 @@ fn render_presentacion_e2e() {
         engine: loquazx_lib::__test::DubEngine::Piper,
         voice: String::new(),
     };
-    let report = loquazx_lib::__test::render_presentacion(&project, &models_dir(), &settings, |_, _| {})
-        .expect("render_presentacion");
+    let report =
+        loquazx_lib::__test::render_presentacion(&project, &models_dir(), &settings, |_, _| {})
+            .expect("render_presentacion");
     let out = PathBuf::from(&report.output);
     assert!(out.is_file(), "no se generó el mp4: {}", out.display());
     assert!(
@@ -211,14 +219,20 @@ fn render_presentacion_e2e() {
     // como hace `VideoPreview`, y pedir la URL al MediaServer.
     let project_state = loquazx_lib::__test::abrir(&project).expect("abrir proyecto");
     eprintln!("[debug] project.path       = {:?}", project_state.path);
-    eprintln!("[debug] project.slides_path = {:?}", project_state.slides_path);
-    eprintln!("[debug] pages/page-1.png existe = {}", pages.join("page-1.png").is_file());
-    let ruta_frontend = format!(
-        "{}/slides/pages/page-1.png",
-        project_state.path
+    eprintln!(
+        "[debug] project.slides_path = {:?}",
+        project_state.slides_path
     );
+    eprintln!(
+        "[debug] pages/page-1.png existe = {}",
+        pages.join("page-1.png").is_file()
+    );
+    let ruta_frontend = format!("{}/slides/pages/page-1.png", project_state.path);
     eprintln!("[debug] ruta construida por el frontend = {ruta_frontend}");
-    eprintln!("[debug] ruta construida existe en disco = {}", PathBuf::from(&ruta_frontend).is_file());
+    eprintln!(
+        "[debug] ruta construida existe en disco = {}",
+        PathBuf::from(&ruta_frontend).is_file()
+    );
     media_server_sirve_pagina(&PathBuf::from(&ruta_frontend));
 }
 
@@ -235,8 +249,8 @@ fn render_presentacion_pdf_muchas_paginas() {
     }
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("demo.lqzx");
-    let _ = loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en")
-        .expect("crear proyecto");
+    let _ =
+        loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en").expect("crear proyecto");
 
     // Genera un PDF de 12 páginas: dispara padding de 2 dígitos en pdftoppm.
     let pdf = dir.path().join("doc.pdf");
@@ -299,8 +313,8 @@ fn render_presentacion_auto_doblaje() {
     }
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("demo.lqzx");
-    let _ = loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en")
-        .expect("crear proyecto");
+    let _ =
+        loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en").expect("crear proyecto");
 
     let pdf = generar_pdf(dir.path());
     let _ = loquazx_lib::__test::importar_pdf(&project, &pdf).expect("importar PDF");
@@ -314,8 +328,8 @@ fn render_presentacion_auto_doblaje() {
         ]}"#,
     )
     .unwrap();
-    let _ = loquazx_lib::__test::importar_segmentos_json(&project, &json)
-        .expect("importar segmentos");
+    let _ =
+        loquazx_lib::__test::importar_segmentos_json(&project, &json).expect("importar segmentos");
 
     // Sin WAVs y con models_dir vacío: el auto-doblaje no puede sintetizar
     // porque no hay voces Piper. El error debe propagarse, no generar un mp4
@@ -366,13 +380,9 @@ fn render_presentacion_auto_doblaje() {
         engine: loquazx_lib::__test::DubEngine::Piper,
         voice: String::new(),
     };
-    let report = loquazx_lib::__test::render_presentacion(
-        &project,
-        &models_vacio,
-        &settings,
-        |_, _| {},
-    )
-    .expect("render con WAVs preexistentes");
+    let report =
+        loquazx_lib::__test::render_presentacion(&project, &models_vacio, &settings, |_, _| {})
+            .expect("render con WAVs preexistentes");
     let out = PathBuf::from(&report.output);
     assert!(out.is_file(), "no se generó el mp4: {}", out.display());
 }
@@ -392,24 +402,121 @@ fn render_presentacion_path_con_espacios_y_acentos() {
         .tempdir()
         .unwrap();
     let project = dir.path().join("proyecto.lqzx");
-    let _ = loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en")
-        .expect("crear proyecto");
+    let _ =
+        loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en").expect("crear proyecto");
 
     let pdf = generar_pdf(dir.path());
     let _ = loquazx_lib::__test::importar_pdf(&project, &pdf).expect("importar PDF");
 
     let project_state = loquazx_lib::__test::abrir(&project).expect("abrir proyecto");
     eprintln!("[debug-acentos] project.path = {:?}", project_state.path);
-    let ruta_frontend = format!(
-        "{}/slides/pages/page-1.png",
-        project_state.path
-    );
+    let ruta_frontend = format!("{}/slides/pages/page-1.png", project_state.path);
     eprintln!("[debug-acentos] ruta frontend = {ruta_frontend}");
     assert!(
         PathBuf::from(&ruta_frontend).is_file(),
         "imagen no existe en disco bajo path con espacios/acentos"
     );
     media_server_sirve_pagina(&PathBuf::from(&ruta_frontend));
+}
+
+/// Verifica el flujo de recalibración de timings (ADR-010): crear proyecto,
+/// importar PDF, importar segmentos, planificar a 2 s, pre-insertar WAVs
+/// dummy de duraciones distintas, aplicar tiempos reales, verificar que
+/// los `start`/`end` se encadenan en base a las duraciones reales. Restaura
+/// al final y verifica que vuelve al estado planificado (no al pre-plan).
+/// Asume `ffmpeg` y `python3` con reportlab en el PATH.
+#[test]
+#[ignore]
+fn planificar_y_aplicar_tiempos_presentacion() {
+    if !ffmpeg_disponible() || !poppler_disponible() {
+        eprintln!("Falta ffmpeg, pdftoppm o pdfinfo; saltando.");
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("demo.lqzx");
+    let _ =
+        loquazx_lib::__test::crear_proyecto(&project, "Demo", "es", "en").expect("crear proyecto");
+
+    let pdf = generar_pdf(dir.path());
+    let _ = loquazx_lib::__test::importar_pdf(&project, &pdf).expect("importar PDF");
+
+    // Importa segmentos con tiempos arbitrarios.
+    let json = dir.path().join("segs.json");
+    std::fs::write(
+        &json,
+        r#"{"segments":[
+            {"start":0.0,"end":3.1,"source":"Hola","translation":"Hello","slide":1},
+            {"start":3.5,"end":5.2,"source":"Mundo","translation":"World","slide":2},
+            {"start":6.0,"end":7.8,"source":"Adios","translation":"Bye","slide":3}
+        ]}"#,
+    )
+    .unwrap();
+    let _ =
+        loquazx_lib::__test::importar_segmentos_json(&project, &json).expect("importar segmentos");
+
+    // Planificar a 2 s cada uno.
+    let plan = loquazx_lib::__test::planificar_tiempos_presentacion(&project, 2.0)
+        .expect("planificar tiempos");
+    assert!(loquazx_lib::__test::tiene_backup_timings(&project));
+    assert_eq!(plan.segments.len(), 3);
+    assert!((plan.segments[0].start - 0.0).abs() < 1e-9);
+    assert!((plan.segments[0].end - 2.0).abs() < 1e-9);
+    assert!((plan.segments[1].start - 2.0).abs() < 1e-9);
+    assert!((plan.segments[2].end - 6.0).abs() < 1e-9);
+
+    // Pre-inserta WAVs dummy con duraciones distintas (1.3, 0.9, 1.7).
+    let segments = loquazx_lib::__test::load_segments(&project).expect("segments");
+    let duraciones = [1.3_f64, 0.9, 1.7];
+    let dub_dir = project.join("runs").join("dub");
+    std::fs::create_dir_all(&dub_dir).unwrap();
+    for (s, d) in segments.iter().zip(duraciones.iter()) {
+        let wav = dub_dir.join(format!("{}.wav", s.id));
+        let status = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                &format!("sine=frequency=440:duration={d}"),
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+            ])
+            .arg(&wav)
+            .status()
+            .expect("ffmpeg debe estar instalado");
+        assert!(status.success(), "no se pudo generar {}", wav.display());
+    }
+
+    // Aplica las duraciones reales.
+    let reporte = loquazx_lib::__test::aplicar_tiempos_reales(&project, |_, _| {})
+        .expect("aplicar tiempos reales");
+    assert_eq!(reporte.recalibrated, 3);
+    assert_eq!(reporte.kept, 0);
+
+    let aplicados = loquazx_lib::__test::load_segments(&project).expect("segments recargados");
+    // Suma de duraciones reales: 1.3 + 0.9 + 1.7 = 3.9, encadenadas.
+    assert!((aplicados[0].start - 0.0).abs() < 1e-3);
+    assert!((aplicados[0].end - 1.3).abs() < 1e-3);
+    assert!((aplicados[1].start - 1.3).abs() < 1e-3);
+    assert!((aplicados[1].end - 2.2).abs() < 1e-3);
+    assert!((aplicados[2].start - 2.2).abs() < 1e-3);
+    assert!((aplicados[2].end - 3.9).abs() < 1e-3);
+
+    // El modo placeholder se limpió.
+    let raw = std::fs::read_to_string(project.join("segments.json")).unwrap();
+    assert!(!raw.contains("placeholder"), "raw: {raw}");
+
+    // Restaurar devuelve al estado PRE-plan (los tiempos originales del JSON).
+    let restaurado =
+        loquazx_lib::__test::restaurar_timings_originales(&project).expect("restaurar tiempos");
+    assert!(!loquazx_lib::__test::tiene_backup_timings(&project));
+    assert!((restaurado.segments[0].start - 0.0).abs() < 1e-9);
+    assert!((restaurado.segments[0].end - 3.1).abs() < 1e-9);
+    assert!((restaurado.segments[1].start - 3.5).abs() < 1e-9);
+    assert!((restaurado.segments[2].start - 6.0).abs() < 1e-9);
 }
 
 /// Verifica que el `MediaServer` puede registrar y servir un archivo por HTTP.

@@ -115,9 +115,8 @@ fn normalizar_nombres_paginas(out_dir: &Path, page_count: u32) -> Result<(), Str
         .collect::<Result<_, String>>()?;
     for (i, tmp) in tmps.iter().enumerate() {
         let destino = out_dir.join(format!("page-{}.png", i + 1));
-        fs::rename(tmp, &destino).map_err(|e| {
-            format!("No se pudo renombrar a {}: {e}", destino.display())
-        })?;
+        fs::rename(tmp, &destino)
+            .map_err(|e| format!("No se pudo renombrar a {}: {e}", destino.display()))?;
     }
     Ok(())
 }
@@ -140,7 +139,15 @@ pub fn concatenar_audio_doblaje(
         .fold(0.0_f64, f64::max)
         .max(1.0);
 
-    // Bloques en orden: silencio_inicial, [WAV_dub_o_silencio, silencio_hueco]*
+    // Bloques en orden: silencio_inicial, [Wav_dub_o_silencio, silencio_padding, silencio_hueco]*
+    //
+    // El silencio de padding (Wav + Silencio) es importante: si el WAV es
+    // más corto que el slot del segmento, `atrim=0:{dur}` deja el audio
+    // más corto y el segmento siguiente empieza antes de que cambie la
+    // diapositiva. Eso generaba la sensación de "solapamiento" entre
+    // audio y slide. Aquí medimos la duración real del WAV y rellenamos
+    // el resto del slot con silencio para que el cambio de slide
+    // coincida con el fin del audio.
     let mut entradas: Vec<EntradaAudio> = Vec::new();
     if let Some(primero) = segments.first() {
         if primero.start > 0.0 {
@@ -151,13 +158,22 @@ pub fn concatenar_audio_doblaje(
         let wav = dub_path(project_dir, &s.id);
         let dur = (s.end - s.start).max(0.0);
         if wav.is_file() {
-            entradas.push(EntradaAudio::Wav(wav, dur));
+            // Mide el WAV real y acota al slot: nunca más largo que el
+            // slot (no queremos extender artificialmente con silencio más
+            // allá de la duración que `aplicar_tiempos_reales` reservó).
+            let wav_dur = crate::audio::wav_duration(&wav).unwrap_or(dur);
+            let efectivo = wav_dur.min(dur).max(0.0);
+            entradas.push(EntradaAudio::Wav(wav, efectivo));
+            let padding = dur - efectivo;
+            if padding > 1e-3 {
+                entradas.push(EntradaAudio::Silencio(padding));
+            }
         } else {
             entradas.push(EntradaAudio::Silencio(dur));
         }
         if let Some(sig) = segments.get(i + 1) {
             let hueco = sig.start - s.end;
-            if hueco > 0.0 {
+            if hueco > 1e-3 {
                 entradas.push(EntradaAudio::Silencio(hueco));
             }
         }
@@ -458,5 +474,72 @@ mod tests {
         let segmentos = vec![seg(0.0, 4.0, Some(99))];
         let t = calcular_timeline_imagenes(&segmentos, 3, 4.0);
         assert_eq!(t[0].page, 3);
+    }
+
+    #[test]
+    fn concat_rellena_con_silencio_si_wav_es_mas_corto_que_slot() {
+        // Tras `aplicar_tiempos_reales`, los slots deberían ser exactamente
+        // la duración natural de cada WAV. Pero en la práctica el WAV puede
+        // quedar unos milisegundos más corto que el slot reservado (por
+        // redondeos de `wav_duration` o silencios de cabecera). El concat
+        // debe rellenar la diferencia con silencio para que el audio del
+        // segmento siguiente NO empiece antes del cambio de slide.
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path();
+        let dub_dir = project_dir.join("runs").join("dub");
+        std::fs::create_dir_all(&dub_dir).unwrap();
+
+        // WAVs de 0.5s y 0.7s reales, con slots de 0.5s y 0.7s.
+        for (id, d) in [("a", 0.5_f64), ("b", 0.7)] {
+            let wav = dub_dir.join(format!("{id}.wav"));
+            let status = Command::new("ffmpeg")
+                .args([
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("sine=frequency=440:duration={d}"),
+                    "-ar",
+                    "22050",
+                    "-ac",
+                    "1",
+                ])
+                .arg(&wav)
+                .status()
+                .expect("ffmpeg");
+            assert!(status.success());
+        }
+
+        // Construimos segments con IDs que coincidan con los WAVs y
+        // forzamos un slot un poco más grande que el WAV real para
+        // verificar que se rellena con silencio.
+        let segmentos = vec![
+            Segment {
+                id: "a".into(),
+                start: 0.0,
+                end: 0.6,
+                source: String::new(),
+                translation: String::new(),
+                slide: None,
+            },
+            Segment {
+                id: "b".into(),
+                start: 0.6,
+                end: 1.4,
+                source: String::new(),
+                translation: String::new(),
+                slide: None,
+            },
+        ];
+
+        let out = project_dir.join("audio.wav");
+        let dur = concatenar_audio_doblaje(&segmentos, project_dir, &out).unwrap();
+        // El audio concatenado debe medir exactamente la suma de slots:
+        // (0.6 - 0) + (1.4 - 0.6) = 1.4s.
+        assert!(
+            (dur - 1.4).abs() < 0.05,
+            "duración concatenada {dur} != 1.4 (slots no rellenados con silencio)"
+        );
     }
 }

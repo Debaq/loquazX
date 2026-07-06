@@ -35,25 +35,35 @@ pub struct DubSettings {
     pub voice: String,
 }
 
-/// Sintetiza `text` con el motor de `settings` y lo ajusta para que dure
-/// `target_secs`, dejando el WAV final en `out_wav`. Crea el directorio destino.
+/// Sintetiza `text` con el motor de `settings` y deja el WAV final en `out_wav`.
+/// Crea el directorio destino. `target_secs` controla el ajuste de duración:
+/// - `Some(t)`: ajusta el audio a `t` segundos con `atempo` (camino por
+///   defecto, conserva la voz dentro del hueco original del segmento).
+/// - `None`: deja el WAV a velocidad natural, sin compresión ni dilatación.
+///   Es el modo que usa el flujo de recalibración de timings (ADR-010) para
+///   que la duración real del audio dicte el `start`/`end` de cada segmento.
 pub fn synth_segment(
     settings: &DubSettings,
     text: &str,
     models_dir: &Path,
-    target_secs: f64,
+    target_secs: Option<f64>,
     out_wav: &Path,
 ) -> Result<(), String> {
     if let Some(parent) = out_wav.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("No se pudo crear el directorio de doblaje: {e}"))?;
     }
-    // WAV «natural» temporal junto al destino; se borra tras ajustar.
-    let natural = out_wav.with_extension("natural.wav");
-    let synth = synth_natural(settings, text, models_dir, &natural);
-    let result = synth.and_then(|()| audio::fit_duration(&natural, out_wav, target_secs));
-    let _ = std::fs::remove_file(&natural);
-    result
+    match target_secs {
+        Some(t) => {
+            // WAV «natural» temporal junto al destino; se borra tras ajustar.
+            let natural = out_wav.with_extension("natural.wav");
+            let result = synth_natural(settings, text, models_dir, &natural)
+                .and_then(|()| audio::fit_duration(&natural, out_wav, t));
+            let _ = std::fs::remove_file(&natural);
+            result
+        }
+        None => synth_natural(settings, text, models_dir, out_wav),
+    }
 }
 
 /// Sintetiza a velocidad natural (sin ajuste de tiempo) según el motor.
@@ -168,7 +178,7 @@ mod tests {
             &settings,
             "Buongiorno, questa è una prova di doblaje con Piper.",
             models_dir,
-            2.0,
+            Some(2.0),
             &out,
         )
         .unwrap();

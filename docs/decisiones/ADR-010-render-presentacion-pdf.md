@@ -94,3 +94,20 @@ El mp4 final va a `exports/<nombre>.mp4` (paralelo a `traduccion-solicitud.json`
 - Generación de PDF a partir de las imágenes del proyecto (dirección opuesta, sin demanda).
 - Multi‑idioma de salida en la exportación (se sigue doblando solo al `target_language`).
 - Edición visual del `slide` arrastrando bloques en la `Timeline` (queda como mejora futura; en este PR se edita por segmento desde el `EditPanel`).
+
+### Recalibración de timings
+
+Cuando los `start`/`end` provienen de un import externo o de OCR aproximado, comprimir el audio de doblaje con `atempo` para que entre justo en el hueco degrada la naturalidad de la voz. La recalibración invierte la ecuación en el modo presentación: deja que la duración real del audio dicte los tiempos.
+
+**Decisión.** Dos comandos Tauri nuevos operan sobre el modo presentación únicamente (cuando `manifest.slides.is_some()`); el modo video queda intacto:
+
+- `planificar_tiempos_presentacion(path, duracion_seg)`: pone cada segmento a `duracion_seg` segundos (por defecto 2 s), encadenados desde 0. La primera vez copia `segments.json` a `timings.original.json` como backup único; llamadas subsiguientes no lo sobrescriben. Persiste con `SegmentsFile.timing_mode = "placeholder"`.
+- `aplicar_tiempos_reales(path, on_progress)`: sintetiza los WAV faltantes a velocidad natural (`tts::synth_segment(..., None, ...)` salta `fit_duration`), mide la duración natural de cada WAV con `audio::wav_duration` y reasigna `start`/`end` cumulativamente: `start = cursor`, `end = cursor + dur`, `cursor = end`. Limpia `timing_mode` y persiste.
+
+**Auto-trigger.** `generate_dub` y `render_presentation` detectan el modo placeholder + `manifest.slides.is_some()` y aplican `aplicar_tiempos_reales` al terminar la generación, sin intervención de la UI. El modo video nunca dispara este camino.
+
+**Flujo del usuario.** Botón «Eliminar tiempos» en la `TopBar` (icono `Wand2`) llama a `planificar_tiempos_presentacion` y crea el backup. El usuario genera los audios (botón masivo de la `Timeline`, por segmento desde el `EditPanel`, o vía auto-doblaje del render). Cuando todos los audios están listos, los tiempos reales se aplican automáticamente y el botón «Exportar video» produce un mp4 cuya duración coincide con la suma de WAVs. Botón «Restaurar» (icono `RotateCcw`, sólo visible si hay backup) revierte a los `start`/`end` originales y borra el backup.
+
+**Tipos y comandos Tauri nuevos.** `RecalibrationReport { recalibrated, kept }`; `segments.json` gana `timing_mode: Option<String>` (`#[serde(default, skip_serializing_if = "Option::is_none")]`); comandos `planificar_tiempos_presentacion`, `aplicar_tiempos_reales`, `tiene_backup_timings`, `restaurar_timings_originales`.
+
+**Tests.** Cuatro unitarios en `project::tests` (`planificar_pone_cada_segmento_a_2s_y_marca_placeholder`, `planificar_no_sobrescribe_backup_existente`, `aplicar_reasigna_con_duraciones_naturales_de_wav`, `restaurar_vuelve_al_estado_original_y_borra_backup`) más un E2E `planificar_y_aplicar_tiempos_presentacion` (marcado `#[ignore]`) en `tests/render_presentacion.rs`.

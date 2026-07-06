@@ -11,7 +11,7 @@ mod tts;
 mod tts_edge;
 mod voices;
 
-use project::{ExportResult, ImportResult, Project, Segment};
+use project::{ExportResult, ImportResult, Project, RecalibrationReport, Segment};
 use std::path::PathBuf;
 use tauri::{Emitter, Manager};
 
@@ -485,6 +485,93 @@ async fn regenerar_imagenes_pdf(path: String) -> Result<Project, String> {
     .map_err(|e| format!("La regeneración se interrumpió: {e}"))?
 }
 
+// ADR-010: pone cada segmento a `duracion_seg` segundos, uno tras otro a
+// partir de 0. Crea un backup único de los `start`/`end` originales la
+// primera vez. Pensado para el modo presentación cuando los timings
+// importados son aproximados y se prefiere que la duración real del audio
+// dicte el ritmo. Asíncrono por simetría con `importar_pdf`: el orden y
+// copia son baratos pero la operación no debe congelar la UI.
+#[tauri::command]
+async fn planificar_tiempos_presentacion(
+    path: String,
+    duracion_seg: f64,
+) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::planificar_tiempos_presentacion(&PathBuf::from(path), duracion_seg)
+    })
+    .await
+    .map_err(|e| format!("La planificación de tiempos se interrumpió: {e}"))?
+}
+
+// ADR-010: consulta barata para que el botón «Restaurar» de la TopBar
+// sólo aparezca cuando hay un backup real en disco.
+#[tauri::command]
+fn tiene_backup_timings(path: String) -> bool {
+    project::tiene_backup_timings(&PathBuf::from(path))
+}
+
+// ADR-010: restaura los `start`/`end` originales desde `timings.original.json`
+// y borra el backup. Falla con mensaje claro si no hay backup.
+#[tauri::command]
+fn restaurar_timings_originales(path: String) -> Result<Project, String> {
+    project::restaurar_timings_originales(&PathBuf::from(path))
+}
+
+// ADR-010: aplica la duración natural de los WAV de doblaje a los
+// `start`/`end` de los segmentos, sin compresión ni dilatación. Pensado
+// para el segundo paso del flujo de recalibración, pero expuesto como
+// comando por si el frontend quiere dispararlo a mano. En condiciones
+// normales lo invoca automáticamente `generate_dub` o `render_presentation`
+// cuando el proyecto está en `timing_mode = "placeholder"`.
+#[tauri::command]
+async fn aplicar_tiempos_reales(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    path: String,
+) -> Result<RecalibrationReport, String> {
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(move || {
+        project::aplicar_tiempos_reales(&PathBuf::from(path), |etapa, total| {
+            let _ = window.emit(
+                "presentacion:timings:progreso",
+                ProgresoPresentacion { etapa, total },
+            );
+        })
+    })
+    .await
+    .map_err(|e| format!("La recalibración se interrumpió: {e}"))?
+}
+
+/// Resultado de leer `segments.json` con su `timing_mode`.
+/// Lo usa el frontend para decidir si muestra el botón «Aplicar tiempos».
+#[derive(serde::Serialize)]
+struct SegmentsConTiming {
+    segments: Vec<Segment>,
+    timing_mode: Option<String>,
+}
+
+// ADR-010: devuelve los segmentos y el `timing_mode` actual para que la
+// UI pueda mostrar el botón «Aplicar tiempos» sólo cuando el proyecto está
+// en modo placeholder. Es una consulta barata: lee sólo `segments.json`.
+#[tauri::command]
+fn leer_segments_con_timing(path: String) -> Result<SegmentsConTiming, String> {
+    let raw = std::fs::read_to_string(PathBuf::from(&path).join("segments.json"))
+        .map_err(|e| format!("No se pudo leer segments.json: {e}"))?;
+    #[derive(serde::Deserialize)]
+    struct SF {
+        #[serde(default)]
+        segments: Vec<Segment>,
+        #[serde(default)]
+        timing_mode: Option<String>,
+    }
+    let parsed: SF =
+        serde_json::from_str(&raw).map_err(|e| format!("segments.json inválido: {e}"))?;
+    Ok(SegmentsConTiming {
+        segments: parsed.segments,
+        timing_mode: parsed.timing_mode,
+    })
+}
+
 /// Shims públicos para tests de integración que necesitan tocar el pipeline
 /// interno sin pasar por la UI ni por `tauri::test`. Marcados con el prefijo
 /// `__test_` para que sea evidente que no son parte de la API de cara al
@@ -493,7 +580,7 @@ async fn regenerar_imagenes_pdf(path: String) -> Result<Project, String> {
 pub mod __test {
     use std::path::{Path, PathBuf};
 
-    pub use super::project::{Presentation, Segment};
+    pub use super::project::{Presentation, RecalibrationReport, Segment};
     pub use super::tts::DubSettings;
     /// Alias para mantener el nombre usado en el shim de testing.
     pub use super::tts::Engine as DubEngine;
@@ -543,6 +630,28 @@ pub mod __test {
 
     pub fn regenerar_imagenes_pdf(path: &Path) -> Result<super::project::Project, String> {
         super::project::regenerate_slide_pages(path)
+    }
+
+    pub fn planificar_tiempos_presentacion(
+        path: &Path,
+        duracion_seg: f64,
+    ) -> Result<super::project::Project, String> {
+        super::project::planificar_tiempos_presentacion(path, duracion_seg)
+    }
+
+    pub fn aplicar_tiempos_reales(
+        path: &Path,
+        on_progress: impl Fn(usize, usize),
+    ) -> Result<super::project::RecalibrationReport, String> {
+        super::project::aplicar_tiempos_reales(path, on_progress)
+    }
+
+    pub fn tiene_backup_timings(path: &Path) -> bool {
+        super::project::tiene_backup_timings(path)
+    }
+
+    pub fn restaurar_timings_originales(path: &Path) -> Result<super::project::Project, String> {
+        super::project::restaurar_timings_originales(path)
     }
 
     /// Crea un `MediaServer` y devuelve un handle de testing con su puerto.
@@ -607,6 +716,11 @@ pub fn run() {
             importar_segmentos_json,
             renderizar_presentacion,
             regenerar_imagenes_pdf,
+            planificar_tiempos_presentacion,
+            aplicar_tiempos_reales,
+            tiene_backup_timings,
+            restaurar_timings_originales,
+            leer_segments_con_timing,
             forma_onda,
             url_media,
             url_slide

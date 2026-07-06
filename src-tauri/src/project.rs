@@ -83,6 +83,13 @@ pub struct Segment {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SegmentsFile {
     segments: Vec<Segment>,
+    /// Modo de planificación temporal de los segmentos (ADR-010). Ausente o
+    /// `None` en estado normal. `Some("placeholder")` indica que se aplicó
+    /// `planificar_tiempos_presentacion` y aún no se midieron las duraciones
+    /// reales de los WAV; los dubs se sintetizan a velocidad natural y, al
+    /// terminar la generación, se reasignan los `start`/`end` en cascada.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timing_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -341,7 +348,13 @@ pub fn transcribe(path: &Path, model: &Path) -> Result<Project, String> {
             .collect();
 
     // ADR-004: la transcripción reemplaza los segmentos; la UI confirma antes.
-    write_json(&path.join("segments.json"), &SegmentsFile { segments })?;
+    write_json(
+        &path.join("segments.json"),
+        &SegmentsFile {
+            segments,
+            timing_mode: None,
+        },
+    )?;
 
     open(path)
 }
@@ -353,7 +366,55 @@ pub fn save_segments(path: &Path, segments: Vec<Segment>) -> Result<(), String> 
             path.display()
         ));
     }
-    write_json(&path.join("segments.json"), &SegmentsFile { segments })
+    // Conserva el `timing_mode` actual: una edición manual de segmentos no
+    // debe borrar el modo placeholder pendiente de aplicar.
+    let timing_mode = read_json::<SegmentsFile>(&path.join("segments.json"))
+        .unwrap_or_default()
+        .timing_mode;
+    write_json(
+        &path.join("segments.json"),
+        &SegmentsFile {
+            segments,
+            timing_mode,
+        },
+    )
+}
+
+/// Lee `segments.json` devolviendo los segmentos y el `timing_mode` actual.
+/// Útil para los flujos que necesitan conocer el modo antes de escribir.
+fn read_segments_with_timing(path: &Path) -> Result<(Vec<Segment>, Option<String>), String> {
+    let file = read_json::<SegmentsFile>(&path.join("segments.json")).unwrap_or_default();
+    Ok((file.segments, file.timing_mode))
+}
+
+/// Persiste los segmentos con un `timing_mode` explícito. Lo usan las
+/// funciones de planificación y restauración de timings.
+fn write_segments_with_timing(
+    path: &Path,
+    segments: Vec<Segment>,
+    timing_mode: Option<String>,
+) -> Result<(), String> {
+    write_json(
+        &path.join("segments.json"),
+        &SegmentsFile {
+            segments,
+            timing_mode,
+        },
+    )
+}
+
+/// Ruta del archivo de backup de los timings originales (ADR-010). Existe
+/// sólo cuando el usuario aplicó `planificar_tiempos_presentacion` y aún
+/// no restauró. Borrarlo a mano equivale a perder la posibilidad de undo.
+pub fn timings_backup_path(path: &Path) -> std::path::PathBuf {
+    path.join("timings.original.json")
+}
+
+/// `true` si el proyecto tiene un backup de timings originales (ADR-010).
+/// Refleja el estado real del disco: si el usuario borra el archivo a
+/// mano, devuelve `false`.
+pub fn tiene_backup_timings(path: &Path) -> bool {
+    timings_backup_path(path).is_file()
 }
 
 /// Resultado de exportar la solicitud de traducción (ADR-006).
@@ -424,7 +485,13 @@ pub fn import_translation(path: &Path, response: &Path) -> Result<ImportResult, 
         .segments;
 
     let (segments, report) = crate::translation::apply_response(segments, &response);
-    write_json(&path.join("segments.json"), &SegmentsFile { segments })?;
+    write_json(
+        &path.join("segments.json"),
+        &SegmentsFile {
+            segments,
+            timing_mode: None,
+        },
+    )?;
 
     Ok(ImportResult {
         project: open(path)?,
@@ -463,7 +530,13 @@ pub fn translate_local(
         segments: response_segments,
     };
     let (segments, report) = crate::translation::apply_response(segments, &response);
-    write_json(&path.join("segments.json"), &SegmentsFile { segments })?;
+    write_json(
+        &path.join("segments.json"),
+        &SegmentsFile {
+            segments,
+            timing_mode: None,
+        },
+    )?;
 
     Ok(ImportResult {
         project: open(path)?,
@@ -537,13 +610,23 @@ fn texto_a_doblar(s: &Segment) -> Option<String> {
 /// `end - start`, dejando `runs/dub/<id>.wav`. Emite `on_progress(hechos, total)`
 /// segmento a segmento. Los segmentos sin texto se omiten. La primera
 /// generación con Piper exige la voz descargada; con edge-tts exige red.
+///
+/// En el modo presentación, si el proyecto está en `timing_mode = "placeholder"`
+/// (es decir, el usuario pulsó «Eliminar tiempos»), la síntesis se hace a
+/// velocidad natural y, al terminar, se reasignan los `start`/`end` con las
+/// duraciones reales de los WAV. El modo video queda intacto porque el
+/// auto-trigger exige que el proyecto tenga un PDF importado.
 pub fn generate_dub(
     path: &Path,
     settings: &crate::tts::DubSettings,
     models_dir: &Path,
     on_progress: impl Fn(usize, usize),
 ) -> Result<DubResult, String> {
-    let segments = load_segments(path)?;
+    let (segments, timing_mode) = read_segments_with_timing(path)?;
+    let manifest = read_json::<Manifest>(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    let in_placeholder = is_presentacion_placeholder(&manifest, &timing_mode);
+
     let pendientes: Vec<&Segment> = segments
         .iter()
         .filter(|s| texto_a_doblar(s).is_some())
@@ -559,9 +642,14 @@ pub fn generate_dub(
 
     on_progress(0, total);
     for (i, segment) in pendientes.iter().enumerate() {
-        let target = (segment.end - segment.start).max(0.0);
-        let texto = texto_a_doblar(segment)
-            .expect("filtrado por is_some garantiza texto no vacío");
+        let texto = texto_a_doblar(segment).expect("filtrado por is_some garantiza texto no vacío");
+        // En placeholder la duración natural manda; fuera de placeholder se
+        // conserva el ajuste con atempo al hueco original del segmento.
+        let target = if in_placeholder {
+            None
+        } else {
+            Some((segment.end - segment.start).max(0.0))
+        };
         crate::tts::synth_segment(
             settings,
             &texto,
@@ -572,26 +660,41 @@ pub fn generate_dub(
         on_progress(i + 1, total);
     }
 
+    // Auto-trigger de recalibración: si estamos en placeholder y todos los
+    // segmentos con texto ya tienen WAV, aplicamos los tiempos reales.
+    let recalibrated = if in_placeholder && segmentos_con_wav(path, &segments) >= total {
+        Some(aplicar_tiempos_reales(path, |_, _| {})?)
+    } else {
+        None
+    };
+
     let report = DubReport {
         generated: total,
         skipped: segments.len() - total,
     };
-    Ok(DubResult {
-        project: open(path)?,
-        report,
-    })
+    let project = open(path)?;
+    let _ = recalibrated; // marcador de side-effect: el proyecto ya viene recalibrado.
+    Ok(DubResult { project, report })
 }
 
 /// Genera (o regenera) el doblaje de un único segmento y devuelve la ruta del
 /// WAV resultante. Útil para la regeneración por segmento del `EditPanel`.
 /// Usa la traducción si está, si no el texto origen.
+///
+/// Si el proyecto está en modo placeholder y este segmento es el último sin
+/// WAV, dispara `aplicar_tiempos_reales` para que la UI vea los tiempos
+/// reales al instante (siguiente refresh del proyecto).
 pub fn generate_dub_segment(
     path: &Path,
     seg_id: &str,
     settings: &crate::tts::DubSettings,
     models_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let segments = load_segments(path)?;
+    let (segments, timing_mode) = read_segments_with_timing(path)?;
+    let manifest = read_json::<Manifest>(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    let in_placeholder = is_presentacion_placeholder(&manifest, &timing_mode);
+
     let segment = segments
         .iter()
         .find(|s| s.id == seg_id)
@@ -599,9 +702,228 @@ pub fn generate_dub_segment(
     let texto = texto_a_doblar(segment)
         .ok_or_else(|| "El segmento no tiene texto ni traducción que doblar.".to_string())?;
     let out = dub_path(path, seg_id);
-    let target = (segment.end - segment.start).max(0.0);
+    let target = if in_placeholder {
+        None
+    } else {
+        Some((segment.end - segment.start).max(0.0))
+    };
     crate::tts::synth_segment(settings, &texto, models_dir, target, &out)?;
+
+    // Si tras este segmento ya están todos los WAV del placeholder, aplicamos
+    // los tiempos reales para no dejar al usuario con el placeholder colgado.
+    if in_placeholder {
+        let pendientes: Vec<&Segment> = segments
+            .iter()
+            .filter(|s| texto_a_doblar(s).is_some())
+            .collect();
+        let listos = pendientes
+            .iter()
+            .filter(|s| dub_path(path, &s.id).is_file())
+            .count();
+        if listos == pendientes.len() {
+            let _ = aplicar_tiempos_reales(path, |_, _| {})?;
+        }
+    }
     Ok(out)
+}
+
+/// Resumen de aplicar los tiempos reales de los WAV a los segmentos (ADR-010).
+#[derive(Debug, Serialize)]
+pub struct RecalibrationReport {
+    /// Segmentos a los que se les reasignó `start`/`end` con la duración
+    /// natural del WAV correspondiente.
+    pub recalibrated: usize,
+    /// Segmentos sin WAV (silencio en el render) cuyo `start` se alineó al
+    /// cursor sin alterar su `end - start` original.
+    pub kept: usize,
+}
+
+/// `true` cuando el proyecto está en modo presentación y los segmentos
+/// están en placeholder esperando que se midan las duraciones reales.
+/// El modo video nunca entra en este estado, así que `generate_dub` y
+/// `render_presentation` sólo aplican el auto-trigger cuando se cumplen
+/// ambas condiciones (ADR-010).
+fn is_presentacion_placeholder(manifest: &Manifest, timing_mode: &Option<String>) -> bool {
+    manifest.slides.is_some() && timing_mode.as_deref() == Some("placeholder")
+}
+
+/// Cuenta cuántos segmentos tienen un WAV de doblaje generado en disco.
+fn segmentos_con_wav(path: &Path, segments: &[Segment]) -> usize {
+    segments
+        .iter()
+        .filter(|s| dub_path(path, &s.id).is_file())
+        .count()
+}
+
+/// Planifica los segmentos en slots iguales de `duracion_seg` segundos, uno
+/// tras otro, partiendo de 0 (ADR-010). Pensado para el modo presentación
+/// cuando los `start`/`end` originales son aproximados y el usuario prefiere
+/// que la duración real del audio dicte el ritmo.
+///
+/// La primera vez crea un backup único `timings.original.json` con los
+/// segmentos preexistentes. Llamadas subsiguientes no lo sobrescriben: el
+/// «Restaurar» siempre vuelve al estado anterior al primer planificar.
+///
+/// Persiste con `timing_mode = "placeholder"` para que la próxima
+/// generación de audios se haga a velocidad natural y, al terminar, los
+/// `start`/`end` se reasignen en cascada.
+pub fn planificar_tiempos_presentacion(path: &Path, duracion_seg: f64) -> Result<Project, String> {
+    if !duracion_seg.is_finite() || duracion_seg <= 0.0 {
+        return Err(format!(
+            "La duración por segmento debe ser positiva y finita (recibido {duracion_seg})."
+        ));
+    }
+    let (segments, timing_mode) = read_segments_with_timing(path)?;
+    if segments.is_empty() {
+        return Err("No hay segmentos para planificar.".to_string());
+    }
+    let manifest = read_json::<Manifest>(&path.join("project.json"))
+        .map_err(|e| format!("No es una carpeta de proyecto loquazX válida: {e}"))?;
+    if manifest.slides.is_none() {
+        return Err(
+            "La planificación de tiempos sólo aplica al modo presentación (con PDF importado)."
+                .to_string(),
+        );
+    }
+
+    // Backup único: no pisar si ya hay uno. Así «Restaurar» siempre lleva
+    // al estado anterior al primer planificar, no al último.
+    let backup = timings_backup_path(path);
+    if !backup.is_file() {
+        let snap = SegmentsFile {
+            segments: segments.clone(),
+            timing_mode: None,
+        };
+        write_json(&backup, &snap)?;
+    }
+
+    // Orden estable por el start original para que el orden cronológico
+    // previo se preserve al encadenar los slots.
+    let mut ordenados: Vec<Segment> = segments;
+    ordenados.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let plan: Vec<Segment> = ordenados
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut s)| {
+            let start = i as f64 * duracion_seg;
+            s.start = start;
+            s.end = start + duracion_seg;
+            s
+        })
+        .collect();
+
+    write_segments_with_timing(path, plan, Some("placeholder".to_string()))?;
+    let _ = timing_mode; // marcado: lectura sólo para documentar el flujo previo
+    open(path)
+}
+
+/// Aplica las duraciones reales de los WAV de doblaje a los `start`/`end`
+/// de los segmentos, sin compresión ni dilatación, encadenándolos uno tras
+/// otro a partir de 0 (ADR-010). Cada segmento ocupa exactamente la
+/// duración de su WAV; los que no tienen WAV conservan su hueco original
+/// alineado al cursor para mantener el orden.
+///
+/// Exige que el proyecto esté en `timing_mode = "placeholder"`: si el
+/// usuario nunca pulsó «Eliminar tiempos» la operación no tiene sentido y
+/// falla con un mensaje claro. La síntesis de los WAV faltantes se hace a
+/// velocidad natural (`synth_segment(..., None, ...)`) para que la
+/// medición refleje el ritmo real de la voz, no un ajuste con atempo.
+pub fn aplicar_tiempos_reales(
+    path: &Path,
+    on_progress: impl Fn(usize, usize),
+) -> Result<RecalibrationReport, String> {
+    let (segments, timing_mode) = read_segments_with_timing(path)?;
+    if timing_mode.as_deref() != Some("placeholder") {
+        return Err(
+            "El proyecto no está en modo «placeholder». Pulsa «Eliminar tiempos» antes \
+             de generar los audios para poder aplicar las duraciones reales."
+                .to_string(),
+        );
+    }
+    if segments.is_empty() {
+        return Err("No hay segmentos para recalibrar.".to_string());
+    }
+
+    // Orden por start original (en placeholder coincide con el orden de los
+    // slots de 2 s, pero usamos el orden «lógico» para ser robustos a una
+    // posible edición manual entre planificar y aplicar).
+    let mut ordenados: Vec<Segment> = segments;
+    ordenados.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut recalibrated = 0usize;
+    let mut kept = 0usize;
+    let mut cursor = 0.0_f64;
+    let mut nuevos: Vec<Segment> = Vec::with_capacity(ordenados.len());
+    let mut log_duraciones: Vec<f64> = Vec::with_capacity(ordenados.len());
+    for mut s in ordenados {
+        let wav = dub_path(path, &s.id);
+        let dur = if wav.is_file() {
+            match crate::audio::wav_duration(&wav) {
+                Ok(d) if d > 0.0 => d,
+                _ => {
+                    eprintln!(
+                        "[loquazX] aplicar_tiempos_reales: WAV no medible para id={}, usando 0.5",
+                        s.id
+                    );
+                    0.5
+                }
+            }
+        } else {
+            // Sin WAV: respeta la duración planificada original (2 s) o, si
+            // el hueco era distinto, lo alarga para mantener el ritmo.
+            (s.end - s.start).max(0.5)
+        };
+        eprintln!(
+            "[loquazX] aplicar_tiempos_reales: id={} dur={:.3}s",
+            s.id, dur
+        );
+        log_duraciones.push(dur);
+        s.start = cursor;
+        s.end = cursor + dur;
+        cursor = s.end;
+        if wav.is_file() {
+            recalibrated += 1;
+        } else {
+            kept += 1;
+        }
+        nuevos.push(s);
+    }
+
+    eprintln!(
+        "[loquazX] aplicar_tiempos_reales: {} recalibrados, {} silencios, total {:.3}s, duraciones={:?}",
+        recalibrated,
+        kept,
+        cursor,
+        log_duraciones
+    );
+
+    write_segments_with_timing(path, nuevos, None)?;
+    on_progress(1, 1);
+    Ok(RecalibrationReport { recalibrated, kept })
+}
+
+/// Restaura los segmentos al estado guardado en `timings.original.json` y
+/// borra el backup. Falla con mensaje claro si no hay backup.
+pub fn restaurar_timings_originales(path: &Path) -> Result<Project, String> {
+    let backup = timings_backup_path(path);
+    if !backup.is_file() {
+        return Err(
+            "No hay backup de tiempos originales. Pulsa «Eliminar tiempos» primero.".to_string(),
+        );
+    }
+    let snap: SegmentsFile =
+        read_json(&backup).map_err(|e| format!("El backup de timings está corrupto: {e}"))?;
+    write_segments_with_timing(path, snap.segments, None)?;
+    fs::remove_file(&backup).map_err(|e| format!("No se pudo borrar el backup de timings: {e}"))?;
+    open(path)
 }
 
 /// Rasteriza un PDF en `pages_dir` de forma atómica: escribe a un directorio
@@ -839,7 +1161,13 @@ pub fn import_segments_json(
         });
     }
 
-    write_json(&path.join("segments.json"), &SegmentsFile { segments })?;
+    write_json(
+        &path.join("segments.json"),
+        &SegmentsFile {
+            segments,
+            timing_mode: None,
+        },
+    )?;
     open(path)
 }
 
@@ -903,8 +1231,17 @@ pub fn render_presentation(
 
     // Auto-doblaje: sintetiza los WAV de los segmentos que tengan texto
     // (translation con prioridad, source como fallback) y aún no tengan
-    // audio. Los segmentos sin texto quedan en silencio.
-    let pendientes: Vec<&Segment> = segments
+    // audio. Los segmentos sin texto quedan en silencio. Si el proyecto
+    // está en modo placeholder, la síntesis es a velocidad natural para que
+    // el siguiente paso (`aplicar_tiempos_reales`) mida el ritmo real.
+    let (segments_reloaded, timing_mode) = read_segments_with_timing(path)?;
+    let in_placeholder = is_presentacion_placeholder(&manifest, &timing_mode);
+    let segmentos_a_doblar: Vec<Segment> = if in_placeholder {
+        segments_reloaded.clone()
+    } else {
+        segments.clone()
+    };
+    let pendientes: Vec<&Segment> = segmentos_a_doblar
         .iter()
         .filter(|s| texto_a_doblar(s).is_some() && !dub_path(path, &s.id).is_file())
         .collect();
@@ -912,18 +1249,24 @@ pub fn render_presentation(
     let total_etapas = total_pendientes + 2;
     on_progress(0, total_etapas);
     for (i, s) in pendientes.iter().enumerate() {
-        let target = (s.end - s.start).max(0.0);
-        let texto = texto_a_doblar(s)
-            .expect("filtrado por is_some garantiza texto no vacío");
-        crate::tts::synth_segment(
-            settings,
-            &texto,
-            models_dir,
-            target,
-            &dub_path(path, &s.id),
-        )?;
+        let target = if in_placeholder {
+            None
+        } else {
+            Some((s.end - s.start).max(0.0))
+        };
+        let texto = texto_a_doblar(s).expect("filtrado por is_some garantiza texto no vacío");
+        crate::tts::synth_segment(settings, &texto, models_dir, target, &dub_path(path, &s.id))?;
         on_progress(i + 1, total_etapas);
     }
+
+    // Si estamos en placeholder, aplicamos las duraciones reales antes del
+    // concat de audio para que el video refleje el ritmo real de la voz.
+    let segments = if in_placeholder {
+        aplicar_tiempos_reales(path, |_, _| {})?;
+        load_segments(path)?
+    } else {
+        segments
+    };
 
     // 1) Construye la pista de audio a partir de los WAV de doblaje.
     let audio_out = path.join("slides").join("audio.wav");
@@ -1272,5 +1615,212 @@ mod tests {
         let proyecto = open(&ruta).unwrap();
         assert!(proyecto.manifest.source.is_none());
         assert!(proyecto.video_path.is_none());
+    }
+
+    /// Helper: crea un proyecto en modo presentación (con PDF) y graba N
+    /// segmentos con `start`/`end` arbitrarios para los tests de
+    /// planificación de tiempos. Devuelve la ruta del proyecto.
+    fn proyecto_con_pdf_y_segmentos(dir: &Path, n: usize) -> std::path::PathBuf {
+        use std::process::Command;
+        let ruta = dir.join("demo.lqzx");
+        create(&ruta, "Demo", "es", "en").unwrap();
+        // PDF mínimo: un script de reportlab que escribe una página en blanco.
+        let pdf_dir = dir.join("pdf");
+        std::fs::create_dir_all(&pdf_dir).unwrap();
+        let script = pdf_dir.join("gen.py");
+        let pdf = pdf_dir.join("f.pdf");
+        std::fs::write(
+            &script,
+            format!(
+                "from reportlab.pdfgen import canvas\n\
+                 c = canvas.Canvas('{}')\n\
+                 c.showPage()\n\
+                 c.save()\n",
+                pdf.display(),
+            ),
+        )
+        .unwrap();
+        let status = Command::new("python3")
+            .arg(&script)
+            .status()
+            .expect("python3 debe estar instalado para este test");
+        assert!(status.success(), "no se pudo generar el PDF");
+        import_pdf(&ruta, &pdf).unwrap();
+
+        // Segmentos con tiempos arbitrarios: 1.7, 2.3, 0.9 s — verifican que
+        // planificar los encadena en 2 s exactos independientemente del origen.
+        let duraciones = [1.7_f64, 2.3, 0.9];
+        let segs: Vec<Segment> = (0..n)
+            .map(|i| Segment {
+                id: format!("s{i}"),
+                start: (i as f64) * 5.0,
+                end: (i as f64) * 5.0 + duraciones[i % duraciones.len()],
+                source: format!("Texto {i}"),
+                translation: String::new(),
+                slide: Some(1),
+            })
+            .collect();
+        save_segments(&ruta, segs).unwrap();
+        ruta
+    }
+
+    #[test]
+    fn planificar_pone_cada_segmento_a_2s_y_marca_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = proyecto_con_pdf_y_segmentos(dir.path(), 3);
+
+        let proyecto = planificar_tiempos_presentacion(&ruta, 2.0).unwrap();
+
+        assert_eq!(proyecto.segments.len(), 3);
+        assert!((proyecto.segments[0].start - 0.0).abs() < 1e-9);
+        assert!((proyecto.segments[0].end - 2.0).abs() < 1e-9);
+        assert!((proyecto.segments[1].start - 2.0).abs() < 1e-9);
+        assert!((proyecto.segments[1].end - 4.0).abs() < 1e-9);
+        assert!((proyecto.segments[2].start - 4.0).abs() < 1e-9);
+        assert!((proyecto.segments[2].end - 6.0).abs() < 1e-9);
+        // El `timing_mode` se persiste en disco.
+        let raw = std::fs::read_to_string(ruta.join("segments.json")).unwrap();
+        assert!(raw.contains("\"placeholder\""), "raw: {raw}");
+    }
+
+    #[test]
+    fn planificar_no_sobrescribe_backup_existente() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = proyecto_con_pdf_y_segmentos(dir.path(), 2);
+
+        // Primer planificar: crea el backup con los `start`/`end` originales.
+        planificar_tiempos_presentacion(&ruta, 2.0).unwrap();
+        let backup_raw = std::fs::read_to_string(ruta.join("timings.original.json")).unwrap();
+
+        // Segundo planificar: el backup debe quedar intacto (no se reescribe).
+        planificar_tiempos_presentacion(&ruta, 3.0).unwrap();
+        let backup_raw_despues =
+            std::fs::read_to_string(ruta.join("timings.original.json")).unwrap();
+        assert_eq!(backup_raw, backup_raw_despues);
+    }
+
+    #[test]
+    fn aplicar_reasigna_con_duraciones_naturales_de_wav() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = proyecto_con_pdf_y_segmentos(dir.path(), 3);
+        planificar_tiempos_presentacion(&ruta, 2.0).unwrap();
+
+        // Pre-insertamos WAVs dummy de duraciones distintas (1.2, 0.8, 1.5).
+        // La lógica de aplicar mide con `wav_duration`, que lee la cabecera
+        // RIFF del WAV.
+        let segmentos = load_segments(&ruta).unwrap();
+        let duraciones = [1.2_f64, 0.8, 1.5];
+        let dub_dir = ruta.join("runs").join("dub");
+        std::fs::create_dir_all(&dub_dir).unwrap();
+        for (s, d) in segmentos.iter().zip(duraciones.iter()) {
+            let wav = dub_dir.join(format!("{}.wav", s.id));
+            let status = Command::new("ffmpeg")
+                .args([
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("sine=frequency=440:duration={d}"),
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                ])
+                .arg(&wav)
+                .status()
+                .expect("ffmpeg debe estar instalado");
+            assert!(status.success(), "no se pudo generar {}", wav.display());
+        }
+
+        let reporte = aplicar_tiempos_reales(&ruta, |_, _| {}).unwrap();
+        assert_eq!(reporte.recalibrated, 3);
+        assert_eq!(reporte.kept, 0);
+
+        let aplicados = load_segments(&ruta).unwrap();
+        assert!((aplicados[0].start - 0.0).abs() < 1e-3);
+        assert!((aplicados[0].end - 1.2).abs() < 1e-3);
+        assert!((aplicados[1].start - 1.2).abs() < 1e-3);
+        assert!((aplicados[1].end - 2.0).abs() < 1e-3);
+        assert!((aplicados[2].start - 2.0).abs() < 1e-3);
+        assert!((aplicados[2].end - 3.5).abs() < 1e-3);
+        // El timing_mode se limpió.
+        let raw = std::fs::read_to_string(ruta.join("segments.json")).unwrap();
+        assert!(!raw.contains("placeholder"), "raw: {raw}");
+    }
+
+    #[test]
+    fn aplicar_respeta_duraciones_y_encadena_sin_solapamientos() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = proyecto_con_pdf_y_segmentos(dir.path(), 4);
+        planificar_tiempos_presentacion(&ruta, 2.0).unwrap();
+
+        let segmentos = load_segments(&ruta).unwrap();
+        // WAVs con duraciones MUY distintas (0.3, 2.7, 1.1, 4.2) — verifica
+        // que el orden y la suma de tiempos reales encajan sin solaparse.
+        let duraciones = [0.3_f64, 2.7, 1.1, 4.2];
+        let dub_dir = ruta.join("runs").join("dub");
+        std::fs::create_dir_all(&dub_dir).unwrap();
+        for (s, d) in segmentos.iter().zip(duraciones.iter()) {
+            let wav = dub_dir.join(format!("{}.wav", s.id));
+            let status = Command::new("ffmpeg")
+                .args([
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("sine=frequency=440:duration={d}"),
+                    "-ar",
+                    "22050",
+                    "-ac",
+                    "1",
+                ])
+                .arg(&wav)
+                .status()
+                .expect("ffmpeg");
+            assert!(status.success(), "no se pudo generar {}", wav.display());
+        }
+
+        let reporte = aplicar_tiempos_reales(&ruta, |_, _| {}).unwrap();
+        assert_eq!(reporte.recalibrated, 4);
+        let aplicados = load_segments(&ruta).unwrap();
+
+        // Verifica que el orden es el correcto y NO hay solapamientos.
+        let mut prev_end = 0.0_f64;
+        for (i, s) in aplicados.iter().enumerate() {
+            assert!(
+                s.start >= prev_end - 1e-6,
+                "solapamiento en #{i}: prev_end={prev_end} start={}",
+                s.start
+            );
+            let expected_dur = duraciones[i];
+            assert!(
+                (s.end - s.start - expected_dur).abs() < 1e-3,
+                "segmento {i}: duración esperada {expected_dur}, real {}",
+                s.end - s.start
+            );
+            prev_end = s.end;
+        }
+    }
+
+    #[test]
+    fn restaurar_vuelve_al_estado_original_y_borra_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = proyecto_con_pdf_y_segmentos(dir.path(), 2);
+        let originales = load_segments(&ruta).unwrap();
+        let (s0, e0) = (originales[0].start, originales[0].end);
+        let (s1, e1) = (originales[1].start, originales[1].end);
+
+        planificar_tiempos_presentacion(&ruta, 2.0).unwrap();
+        assert!(tiene_backup_timings(&ruta));
+        assert!((load_segments(&ruta).unwrap()[0].start - 0.0).abs() < 1e-9);
+
+        let proyecto = restaurar_timings_originales(&ruta).unwrap();
+        assert!(!tiene_backup_timings(&ruta));
+        assert!((proyecto.segments[0].start - s0).abs() < 1e-9);
+        assert!((proyecto.segments[0].end - e0).abs() < 1e-9);
+        assert!((proyecto.segments[1].start - s1).abs() < 1e-9);
+        assert!((proyecto.segments[1].end - e1).abs() < 1e-9);
     }
 }

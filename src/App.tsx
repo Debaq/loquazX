@@ -20,6 +20,7 @@ import type {
   DubEngine,
   DubResult,
   RenderReport,
+  RecalibrationReport,
 } from "./types";
 
 const NIVEL_POR_DEFECTO = "base";
@@ -76,6 +77,10 @@ function App() {
   // ADR-010: estado del render de la presentación (PDF + audio doblado).
   const [renderingPresentation, setRenderingPresentation] = useState(false);
   const [renderProgress, setRenderProgress] = useState<{ etapa: number; total: number } | null>(null);
+  // ADR-010: planificación y restauración de tiempos (modo presentación).
+  const [hasTimingsBackup, setHasTimingsBackup] = useState(false);
+  const [inPlaceholder, setInPlaceholder] = useState(false);
+  const [timingsWorking, setTimingsWorking] = useState(false);
 
   // Desactiva el zoom del webview (Ctrl+rueda, pellizco, Ctrl +/-/0): la app
   // no debe escalar como página web; el único zoom es el de la línea de tiempo.
@@ -225,6 +230,18 @@ function App() {
     // Los selectores reflejan los idiomas del proyecto abierto.
     setSourceLanguage(proyecto.manifest.source_language);
     setTargetLanguage(proyecto.manifest.target_language);
+    // El botón «Restaurar» aparece sólo si hay backup de timings.
+    void invoke<boolean>("tiene_backup_timings", { path: proyecto.path })
+      .then(setHasTimingsBackup)
+      .catch(() => setHasTimingsBackup(false));
+    // Lee el modo de planificación directamente de `segments.json` para
+    // mostrar el botón «Aplicar tiempos» sólo cuando aplica.
+    void invoke<{
+      segments: Segment[];
+      timing_mode: string | null;
+    }>("leer_segments_con_timing", { path: proyecto.path })
+      .then((data) => setInPlaceholder(data.timing_mode === "placeholder"))
+      .catch(() => setInPlaceholder(false));
   }
 
   // Cambia los idiomas: si hay proyecto, persiste en su manifiesto (el de origen
@@ -599,6 +616,114 @@ function App() {
     }
   }
 
+  // ADR-010: aplica manualmente las duraciones reales de los WAV a los
+// `start`/`end` de los segmentos. Es un atajo al auto-trigger que ya
+// dispara `generate_dub` al terminar; aquí lo exponemos como botón
+// explícito por si el usuario regenera audios por su cuenta y quiere
+// forzar la recalibración.
+async function aplicarTiempos() {
+    if (!project) return;
+    setTimingsWorking(true);
+    try {
+      const reporte = await invoke<RecalibrationReport>("aplicar_tiempos_reales", {
+        path: project.path,
+      });
+      const proyecto = await invoke<Project>("abrir_proyecto", { path: project.path });
+      cargarProyecto(proyecto);
+      await message(
+        `Tiempos aplicados: ${reporte.recalibrated} segmento(s) recalibrado(s), ${reporte.kept} silencio(s).`,
+        { title: "Aplicar tiempos", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Aplicar tiempos", kind: "error" });
+    } finally {
+      setTimingsWorking(false);
+    }
+  }
+
+  // ADR-010: planificación de tiempos. Pone cada segmento a 2 s secuencial
+  // para que el doblaje posterior se haga a velocidad natural y los tiempos
+  // reales se apliquen al terminar. Crea un backup único la primera vez;
+  // confirma antes si el proyecto ya tiene un cálculo previo o si el
+  // usuario invirtió tiempo en los `start`/`end` actuales.
+  async function eliminarTiempos() {
+    if (!project) return;
+    if (project.slides_path == null) {
+      await message(
+        "Importa un PDF antes de planificar los tiempos.",
+        { title: "Eliminar tiempos", kind: "warning" },
+      );
+      return;
+    }
+    if (segments.length === 0) {
+      await message(
+        "No hay segmentos para planificar.",
+        { title: "Eliminar tiempos", kind: "warning" },
+      );
+      return;
+    }
+    const aviso = hasTimingsBackup
+      ? "Esto reemplazará los tiempos actuales por slots de 2 s. Ya hay un backup, así que «Restaurar» seguirá llevando al estado previo. ¿Continuar?"
+      : "Esto reemplazará los tiempos actuales por slots de 2 s para que los audios se doblen en orden natural. Se creará un backup para poder restaurar después. ¿Continuar?";
+    const continuar = await ask(aviso, {
+      title: "Eliminar tiempos",
+      kind: "warning",
+    });
+    if (!continuar) return;
+    setTimingsWorking(true);
+    try {
+      await guardarProyecto();
+      const proyecto = await invoke<Project>("planificar_tiempos_presentacion", {
+        path: project.path,
+        duracionSeg: 2.0,
+      });
+      cargarProyecto(proyecto);
+      await message(
+        `Tiempos planificados a 2 s por segmento (${segments.length} en total). ` +
+          "Genera los audios (botón «Generar todas» o por segmento desde el panel). " +
+          "Al terminar, las duraciones reales se aplican automáticamente, " +
+          "o puedes pulsar «Aplicar tiempos» para forzarlo.",
+        { title: "Eliminar tiempos", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Eliminar tiempos", kind: "error" });
+    } finally {
+      setTimingsWorking(false);
+    }
+  }
+
+  // ADR-010: restauración de tiempos. Revierte `segments.json` al estado
+  // guardado en `timings.original.json` y borra el backup. Falla con un
+  // mensaje claro si el backup ya no existe (botón deshabilitado en ese
+  // caso, pero el usuario podría haber borrado el archivo a mano).
+  async function restaurarTiempos() {
+    if (!project) return;
+    const continuar = await ask(
+      "Esto restaura los `start`/`end` originales de los segmentos y borra el backup. ¿Continuar?",
+      { title: "Restaurar tiempos", kind: "warning" },
+    );
+    if (!continuar) return;
+    setTimingsWorking(true);
+    try {
+      const proyecto = await invoke<Project>("restaurar_timings_originales", {
+        path: project.path,
+      });
+      cargarProyecto(proyecto);
+      await message(
+        "Tiempos originales restaurados.",
+        { title: "Restaurar tiempos", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Restaurar tiempos", kind: "error" });
+      // Si falló por backup perdido, refrescamos el flag para ocultar el botón.
+      void invoke<boolean>("tiene_backup_timings", { path: project.path })
+        .then(setHasTimingsBackup)
+        .catch(() => setHasTimingsBackup(false));
+    } finally {
+      setTimingsWorking(false);
+    }
+  }
+
   // ADR-010: regenera las imágenes del PDF a partir del PDF persistido.
   // Útil cuando la auto-recuperación del `open` no aplicó (PDF perdido,
   // error al importar) y el usuario no quiere reimportar todavía.
@@ -663,6 +788,12 @@ function App() {
         }
         renderingPresentation={renderingPresentation}
         renderProgress={renderProgress}
+        onEliminarTiempos={eliminarTiempos}
+        onAplicarTiempos={aplicarTiempos}
+        onRestaurarTiempos={restaurarTiempos}
+        hasTimingsBackup={hasTimingsBackup}
+        inPlaceholder={inPlaceholder}
+        timingsWorking={timingsWorking}
       />
       <div className="app__body">
         <aside className="app__left">

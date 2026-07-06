@@ -13,6 +13,9 @@ import {
   Music,
   FilePlus2,
   Clapperboard,
+  Wand2,
+  Sparkles,
+  RotateCcw,
 } from "lucide-react";
 import { LANGUAGES } from "../languages";
 
@@ -58,6 +61,18 @@ interface Props {
   renderingPresentation: boolean;
   /** Avance del render de presentación, si está corriendo. */
   renderProgress?: { etapa: number; total: number } | null;
+  /** Planifica los segmentos a 2s secuenciales para doblar en orden (ADR-010). */
+  onEliminarTiempos: () => void;
+  /** Aplica manualmente las duraciones reales de los audios a los `start`/`end`. */
+  onAplicarTiempos: () => void;
+  /** Restaura los `start`/`end` originales desde el backup. */
+  onRestaurarTiempos: () => void;
+  /** `true` si existe el backup `timings.original.json` en disco. */
+  hasTimingsBackup: boolean;
+  /** `true` si el proyecto está en modo placeholder (después de «Eliminar tiempos»). */
+  inPlaceholder: boolean;
+  /** `true` mientras se ejecuta la planificación o restauración de tiempos. */
+  timingsWorking: boolean;
 }
 
 const ICON_SIZE = 18;
@@ -94,6 +109,12 @@ function TopBar({
   segmentsToDubCount,
   renderingPresentation,
   renderProgress,
+  onEliminarTiempos,
+  onAplicarTiempos,
+  onRestaurarTiempos,
+  hasTimingsBackup,
+  inPlaceholder,
+  timingsWorking,
 }: Props) {
   return (
     <header className="topbar">
@@ -299,6 +320,54 @@ function TopBar({
         >
           <FilePlus2 size={ICON_SIZE} />
         </button>
+        <button
+          type="button"
+          className="topbar__btn topbar__btn--label"
+          onClick={onEliminarTiempos}
+          disabled={!canExportPresentation || timingsWorking || renderingPresentation}
+          title={
+            timingsWorking
+              ? "Planificando tiempos…"
+              : "Eliminar tiempos de los segmentos (los pone a 2s cada uno para doblar en orden natural)"
+          }
+          aria-label="Eliminar tiempos"
+        >
+          {timingsWorking ? (
+            <Loader size={ICON_SIZE} className="topbar__spin" />
+          ) : (
+            <Wand2 size={ICON_SIZE} />
+          )}
+          <span>Eliminar tiempos</span>
+        </button>
+        {inPlaceholder && (
+          <button
+            type="button"
+            className="topbar__btn topbar__btn--label"
+            onClick={onAplicarTiempos}
+            disabled={timingsWorking || renderingPresentation}
+            title="Aplicar las duraciones reales de los audios a los start/end de los segmentos"
+            aria-label="Aplicar tiempos reales"
+          >
+            {timingsWorking ? (
+              <Loader size={ICON_SIZE} className="topbar__spin" />
+            ) : (
+              <Sparkles size={ICON_SIZE} />
+            )}
+            <span>Aplicar tiempos</span>
+          </button>
+        )}
+        {hasTimingsBackup && (
+          <button
+            type="button"
+            className="topbar__btn"
+            onClick={onRestaurarTiempos}
+            disabled={timingsWorking || renderingPresentation}
+            title="Restaurar los tiempos originales (antes de «Eliminar tiempos»)"
+            aria-label="Restaurar tiempos"
+          >
+            <RotateCcw size={ICON_SIZE} />
+          </button>
+        )}
         <button
           type="button"
           className="topbar__btn topbar__btn--label"

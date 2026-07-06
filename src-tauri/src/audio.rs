@@ -98,17 +98,20 @@ fn atempo_chain(source_secs: f64, target_secs: f64) -> Option<String> {
     Some(etapas.join(","))
 }
 
-/// Duración en segundos de un WAV PCM, leída de su cabecera.
+/// Duración en segundos de un WAV PCM. Usa `hound` para parsear la cabecera
+/// en lugar de leer bytes a mano: tolera LIST/INFO/JUNK/fact chunks, formato
+/// IEEE float, encabezado `bext`, y demás variantes que `parse_wav_header`
+/// escrito a mano podría no manejar correctamente.
 pub fn wav_duration(wav: &Path) -> Result<f64, String> {
-    let file = File::open(wav).map_err(|e| format!("No se pudo abrir el audio: {e}"))?;
-    let mut reader = BufReader::new(file);
-    let (channels, sample_rate, bits, data_len) = parse_wav_header(&mut reader)?;
-    let bytes_per_frame = (bits as usize / 8) * (channels.max(1) as usize);
-    if sample_rate == 0 || bytes_per_frame == 0 {
+    let reader = hound::WavReader::open(wav)
+        .map_err(|e| format!("No se pudo abrir el WAV {}: {e}", wav.display()))?;
+    let spec = reader.spec();
+    let frames = reader.duration() as f64;
+    let rate = spec.sample_rate as f64;
+    if rate <= 0.0 {
         return Ok(0.0);
     }
-    let frames = data_len as usize / bytes_per_frame;
-    Ok(frames as f64 / sample_rate as f64)
+    Ok(frames / rate)
 }
 
 /// Mensaje estándar cuando ffmpeg no está instalado. Reusado por otros
@@ -257,28 +260,23 @@ fn parse_wav_header(reader: &mut impl Read) -> Result<(u16, u32, u16, u32), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
-    /// Escribe un WAV PCM mono 16 bits a `rate` Hz con las muestras dadas.
+    /// Escribe un WAV PCM mono 16 bits a `rate` Hz con las muestras dadas,
+    /// reusando `hound` para que el archivo sea idéntico al que produce
+    /// `tts::synth_segment`. El test verifica `wav_duration` sobre ese
+    /// formato, el mismo del path real.
     fn write_wav(path: &Path, rate: u32, samples: &[i16]) {
-        let data_len = (samples.len() * 2) as u32;
-        let mut f = File::create(path).unwrap();
-        f.write_all(b"RIFF").unwrap();
-        f.write_all(&(36 + data_len).to_le_bytes()).unwrap();
-        f.write_all(b"WAVE").unwrap();
-        f.write_all(b"fmt ").unwrap();
-        f.write_all(&16u32.to_le_bytes()).unwrap();
-        f.write_all(&1u16.to_le_bytes()).unwrap(); // PCM
-        f.write_all(&1u16.to_le_bytes()).unwrap(); // mono
-        f.write_all(&rate.to_le_bytes()).unwrap();
-        f.write_all(&(rate * 2).to_le_bytes()).unwrap(); // byte rate
-        f.write_all(&2u16.to_le_bytes()).unwrap(); // block align
-        f.write_all(&16u16.to_le_bytes()).unwrap(); // bits
-        f.write_all(b"data").unwrap();
-        f.write_all(&data_len.to_le_bytes()).unwrap();
-        for s in samples {
-            f.write_all(&s.to_le_bytes()).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for &s in samples {
+            writer.write_sample(s).unwrap();
         }
+        writer.finalize().unwrap();
     }
 
     #[test]
