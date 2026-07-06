@@ -44,7 +44,8 @@ jobs:
             cmake \
             libclang-dev \
             libpcaudio-dev \
-            libsonic-dev
+            libsonic-dev \
+            poppler-utils
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri

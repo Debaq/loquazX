@@ -16,6 +16,7 @@ Este archivo documenta el uso de herramientas de IA generativa en el desarrollo 
 | Claude Opus 4.7 (1M)   | 2026-01                | Bootstrap del repositorio, scaffolding inicial, ADRs      |
 | Claude Fable 5         | 2026-06                | Implementación del formato de proyecto (ADR-002)          |
 | Claude Opus 4.8 (1M)   | 2026-06                | Traducción export/import (ADR-006) y modelo whisper (ADR-007) |
+| Claude Opus 4.8 (1M)   | 2026-07                | Render de presentación con PDF (ADR-010) y recalibración de timings |
 
 Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
@@ -234,6 +235,28 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 ---
 
+### 2026-07-02 — Render de presentación con PDF + segmentos (ADR-010)
+
+**Herramienta:** Claude Opus 4.8 (Claude Code)
+
+**Contexto:** Feature pedida por Nicolás tras el merge del doblaje (PR #17): un usuario con un PDF y los textos de la charla debería poder armar un video narrado en otro idioma sin pasar por grabar video. La idea es que un proyecto `.lqzx` pueda traer un PDF de fondo además (o en lugar) del video, y que cada segmento lleve el número de página del PDF que se muestra durante su `start`/`end`. Issue #18.
+
+**Aporte de la IA:** Borrador del ADR-010 (extensión del formato de proyecto: campo `slides` opcional en el manifiesto y `slide` opcional en `Segment`; dependencia nueva asumida `pdftoppm` de Poppler). Nuevo módulo Rust `presentacion.rs` que rasteriza el PDF con `pdftoppm`, arma el `concat.txt` de ffmpeg con bloques de página y mezcla los WAV de `runs/dub/` con silencios en los huecos. Comandos Tauri `importar_pdf`/`conteo_paginas_pdf`/`importar_audio_presentacion`/`importar_segmentos_json`/`renderizar_presentacion`. Frontend: tres botones nuevos en la `TopBar` (Importar PDF, Importar audio, Importar segmentos JSON, Exportar video), `EditPanel` con campo numérico de slide, `VideoPreview` mostrando la página del PDF activa cuando no hay video, y pista "Slides" en la `Timeline`.
+
+**Decisiones humanas:**
+
+- Misma plantilla de proyecto (no formato aparte), siguiendo el patrón "fuente opcional" que ya se adoptó para `source`.
+- Render en backend Rust con `ffmpeg` (consistente con el resto del proyecto).
+- Extender `Segment` con `slide` opcional (mínimo cambio al esquema).
+- Numeración 1‑based para `slide`.
+- La app no graba audio: si el usuario no tiene video, importa un audio arbitrario o escribe los segmentos a mano; la transcripción por whisper queda fuera de este modo (se documenta como limitación).
+
+**Revisión humana:** Pendiente de revisión en el PR asociado antes de merge. La generación end-to-end del mp4 se valida manualmente con un PDF y un par de segmentos doblados; los tests automáticos cubren utilidades del pipeline de audio y el parseo del JSON de import.
+
+**Commits asociados:** se enlazarán en el PR que cierra #18.
+
+---
+
 ## Plantilla en blanco para nuevas entradas
 
 ```
@@ -251,3 +274,17 @@ Esta tabla se actualizará cuando se sumen nuevas herramientas.
 
 **Commits asociados:** [SHAs o enlaces].
 ```
+
+### 2026-07-03 — Render de presentación con PDF (ADR-010) y recalibración de timings
+
+**Herramienta:** Claude Opus 4.8 (1M context)
+
+**Contexto:** Cierre del feature ADR-010 (render de presentación) y re‑implementación de la recalibración de timings (intentos previos `0091ec9` y `a830bcf` revertidos). Nicolás necesitaba que los audios del modo presentación se generaran a velocidad natural y que sus duraciones reales dictaran los `start`/`end` de los segmentos, sin compresión ni dilatación.
+
+**Aporte de la IA:** Módulo `presentacion.rs` con rasterizado del PDF, concat de audio y composición del mp4. Backend: `tts::synth_segment` extendida con `target_secs: Option<f64>` (None salta `fit_duration`); funciones nuevas en `project.rs` (`planificar_tiempos_presentacion`, `aplicar_tiempos_reales`, `tiene_backup_timings`, `restaurar_timings_originales`, `RecalibrationReport`); auto‑trigger al final de `generate_dub` y `render_presentation` cuando `manifest.slides.is_some()` y `timing_mode == "placeholder"`. Frontend: dos botones nuevos en la `TopBar` («Eliminar tiempos» con `Wand2`, «Restaurar» con `RotateCcw` condicional al backup), handlers en `App.tsx`, query de `tiene_backup_timings` al cargar el proyecto. Tests: cuatro unitarios en `project::tests` y un E2E nuevo `#[ignore]` en `tests/render_presentacion.rs`. Docs: nueva subsección en ADR-010, entradas en CHANGELOG y AI_USAGE.
+
+**Decisiones humanas:** Limitar el auto‑trigger al modo presentación (no tocar el modo video); un único botón «Eliminar tiempos» (la aplicación de tiempos reales ocurre automáticamente al generar los audios); el botón «Restaurar» sólo aparece si existe `timings.original.json`; el backup se crea una sola vez y no se sobrescribe en planificaciones subsiguientes.
+
+**Revisión humana:** Revisión manual del código, ejecución de `cargo fmt`, `cargo clippy --all-targets -- -D warnings` y `cargo test --lib` (70 tests verdes) más `cargo test --test render_presentacion -- --ignored` (5 tests verdes). Smoke manual de la app queda pendiente para validación final del flujo de UI.
+
+**Commits asociados:** Se commitea al cierre de esta sesión.

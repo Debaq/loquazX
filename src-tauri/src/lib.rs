@@ -2,6 +2,7 @@ mod audio;
 mod download;
 mod media_server;
 mod models;
+mod presentacion;
 mod project;
 mod transcribe;
 mod translate_engine;
@@ -10,7 +11,7 @@ mod tts;
 mod tts_edge;
 mod voices;
 
-use project::{ExportResult, ImportResult, Project, Segment};
+use project::{ExportResult, ImportResult, Project, RecalibrationReport, Segment};
 use std::path::PathBuf;
 use tauri::{Emitter, Manager};
 
@@ -39,8 +40,12 @@ fn crear_proyecto(
 }
 
 #[tauri::command]
-fn abrir_proyecto(path: String) -> Result<Project, String> {
-    project::open(&PathBuf::from(path))
+async fn abrir_proyecto(path: String) -> Result<Project, String> {
+    // Asíncrono: la auto-recuperación de páginas del PDF (ADR-010) puede
+    // tardar varios segundos en PDFs grandes y no debe congelar la UI.
+    tauri::async_runtime::spawn_blocking(move || project::open(&PathBuf::from(path)))
+        .await
+        .map_err(|e| format!("La apertura del proyecto se interrumpió: {e}"))?
 }
 
 #[tauri::command]
@@ -90,7 +95,35 @@ fn url_media(
     server: tauri::State<media_server::MediaServer>,
     path: String,
 ) -> Result<String, String> {
-    server.url_for(std::path::Path::new(&path))
+    let p = std::path::Path::new(&path);
+    eprintln!("[loquazX] url_media: {p:?}");
+    let result = server.url_for(p);
+    if let Err(ref e) = result {
+        eprintln!("[loquazX] url_media falló: {e}");
+    }
+    result
+}
+
+/// Devuelve la URL local de una página rasterizada del PDF (ADR-010). Arma el
+/// path internamente a partir del proyecto y el número de página para que el
+/// frontend no tenga que componerlo a mano (antes fallaba con "no existe el
+/// fichero" porque el path construido en JS no coincidía con el real).
+#[tauri::command]
+fn url_slide(
+    server: tauri::State<media_server::MediaServer>,
+    project_path: String,
+    page: u32,
+) -> Result<String, String> {
+    let png = std::path::Path::new(&project_path)
+        .join("slides")
+        .join("pages")
+        .join(format!("page-{page}.png"));
+    eprintln!("[loquazX] url_slide: {png:?}");
+    let result = server.url_for(&png);
+    if let Err(ref e) = result {
+        eprintln!("[loquazX] url_slide falló: {e}");
+    }
+    result
 }
 
 // ADR-007: lista los niveles de modelo y su estado de descarga.
@@ -365,6 +398,279 @@ async fn generar_doblaje_segmento(
     server.url_for(&wav)
 }
 
+// ADR-010: lee el conteo de páginas de un PDF sin importarlo al proyecto.
+// Sirve para validar la UI antes de aceptar el archivo.
+#[tauri::command]
+fn conteo_paginas_pdf(pdf: String) -> Result<u32, String> {
+    presentacion::conteo_paginas_pdf(std::path::Path::new(&pdf))
+}
+
+// ADR-010: importa un PDF de fondo al proyecto, lo copia bajo `slides/` y
+// rasteriza las páginas en background (no bloquea la UI).
+#[tauri::command]
+async fn importar_pdf(path: String, pdf: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::import_pdf(&PathBuf::from(path), &PathBuf::from(pdf))
+    })
+    .await
+    .map_err(|e| format!("La importación del PDF se interrumpió: {e}"))?
+}
+
+// ADR-010: importa un audio arbitrario como `manifest.audio`. Pensado para el
+// modo presentación cuando no hay video del cual extraer audio.
+#[tauri::command]
+async fn importar_audio_presentacion(path: String, audio: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::import_audio_presentation(&PathBuf::from(path), &PathBuf::from(audio))
+    })
+    .await
+    .map_err(|e| format!("La importación del audio se interrumpió: {e}"))?
+}
+
+// ADR-010: importa segmentos desde un JSON externo `{start, end, slide, source}`.
+// Sobrescribe los segmentos existentes; la UI confirma antes.
+#[tauri::command]
+fn importar_segmentos_json(path: String, json: String) -> Result<Project, String> {
+    let dir = PathBuf::from(&path);
+    let manifest: project::Manifest = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("project.json"))
+            .map_err(|e| format!("No se pudo leer el manifiesto: {e}"))?,
+    )
+    .map_err(|e| format!("Manifiesto inválido: {e}"))?;
+    let page_count = manifest.slides.as_ref().map(|s| s.page_count);
+    project::import_segments_json(&dir, &PathBuf::from(json), page_count)
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ProgresoPresentacion {
+    etapa: usize,
+    total: usize,
+}
+
+// ADR-010: rasteriza el PDF, concatena el audio doblado y compone el mp4
+// final. Auto-dobla los segmentos traducidos que aún no tengan WAV (con el
+// motor y la voz que la UI tenga configurados) para que el usuario no
+// tenga que pasar por el botón «Generar todas» de la Timeline. Asíncrono:
+// puede tardar varios segundos y no debe congelar el hilo principal.
+#[tauri::command]
+async fn renderizar_presentacion(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    path: String,
+    ajustes: tts::DubSettings,
+) -> Result<project::RenderReport, String> {
+    let dir = models_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        project::render_presentation(&PathBuf::from(path), &dir, &ajustes, |etapa, total| {
+            let _ = window.emit(
+                "presentacion:progreso",
+                ProgresoPresentacion { etapa, total },
+            );
+        })
+    })
+    .await
+    .map_err(|e| format!("El render de la presentación se interrumpió: {e}"))?
+}
+
+// ADR-010: regenera las imágenes de las páginas a partir del PDF persistido.
+// Útil cuando la auto-recuperación del `open` no aplicó (porque el PDF se
+// perdió) y el usuario no quiere reimportar todavía. Asíncrono por la misma
+// razón que `importar_pdf`: la rasterización puede tardar.
+#[tauri::command]
+async fn regenerar_imagenes_pdf(path: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::regenerate_slide_pages(&PathBuf::from(path))
+    })
+    .await
+    .map_err(|e| format!("La regeneración se interrumpió: {e}"))?
+}
+
+// ADR-010: pone cada segmento a `duracion_seg` segundos, uno tras otro a
+// partir de 0. Crea un backup único de los `start`/`end` originales la
+// primera vez. Pensado para el modo presentación cuando los timings
+// importados son aproximados y se prefiere que la duración real del audio
+// dicte el ritmo. Asíncrono por simetría con `importar_pdf`: el orden y
+// copia son baratos pero la operación no debe congelar la UI.
+#[tauri::command]
+async fn planificar_tiempos_presentacion(
+    path: String,
+    duracion_seg: f64,
+) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        project::planificar_tiempos_presentacion(&PathBuf::from(path), duracion_seg)
+    })
+    .await
+    .map_err(|e| format!("La planificación de tiempos se interrumpió: {e}"))?
+}
+
+// ADR-010: consulta barata para que el botón «Restaurar» de la TopBar
+// sólo aparezca cuando hay un backup real en disco.
+#[tauri::command]
+fn tiene_backup_timings(path: String) -> bool {
+    project::tiene_backup_timings(&PathBuf::from(path))
+}
+
+// ADR-010: restaura los `start`/`end` originales desde `timings.original.json`
+// y borra el backup. Falla con mensaje claro si no hay backup.
+#[tauri::command]
+fn restaurar_timings_originales(path: String) -> Result<Project, String> {
+    project::restaurar_timings_originales(&PathBuf::from(path))
+}
+
+// ADR-010: aplica la duración natural de los WAV de doblaje a los
+// `start`/`end` de los segmentos, sin compresión ni dilatación. Pensado
+// para el segundo paso del flujo de recalibración, pero expuesto como
+// comando por si el frontend quiere dispararlo a mano. En condiciones
+// normales lo invoca automáticamente `generate_dub` o `render_presentation`
+// cuando el proyecto está en `timing_mode = "placeholder"`.
+#[tauri::command]
+async fn aplicar_tiempos_reales(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    path: String,
+) -> Result<RecalibrationReport, String> {
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(move || {
+        project::aplicar_tiempos_reales(&PathBuf::from(path), |etapa, total| {
+            let _ = window.emit(
+                "presentacion:timings:progreso",
+                ProgresoPresentacion { etapa, total },
+            );
+        })
+    })
+    .await
+    .map_err(|e| format!("La recalibración se interrumpió: {e}"))?
+}
+
+/// Resultado de leer `segments.json` con su `timing_mode`.
+/// Lo usa el frontend para decidir si muestra el botón «Aplicar tiempos».
+#[derive(serde::Serialize)]
+struct SegmentsConTiming {
+    segments: Vec<Segment>,
+    timing_mode: Option<String>,
+}
+
+// ADR-010: devuelve los segmentos y el `timing_mode` actual para que la
+// UI pueda mostrar el botón «Aplicar tiempos» sólo cuando el proyecto está
+// en modo placeholder. Es una consulta barata: lee sólo `segments.json`.
+#[tauri::command]
+fn leer_segments_con_timing(path: String) -> Result<SegmentsConTiming, String> {
+    let raw = std::fs::read_to_string(PathBuf::from(&path).join("segments.json"))
+        .map_err(|e| format!("No se pudo leer segments.json: {e}"))?;
+    #[derive(serde::Deserialize)]
+    struct SF {
+        #[serde(default)]
+        segments: Vec<Segment>,
+        #[serde(default)]
+        timing_mode: Option<String>,
+    }
+    let parsed: SF =
+        serde_json::from_str(&raw).map_err(|e| format!("segments.json inválido: {e}"))?;
+    Ok(SegmentsConTiming {
+        segments: parsed.segments,
+        timing_mode: parsed.timing_mode,
+    })
+}
+
+/// Shims públicos para tests de integración que necesitan tocar el pipeline
+/// interno sin pasar por la UI ni por `tauri::test`. Marcados con el prefijo
+/// `__test_` para que sea evidente que no son parte de la API de cara al
+/// usuario; cualquier uso desde la app es un bug.
+#[doc(hidden)]
+pub mod __test {
+    use std::path::{Path, PathBuf};
+
+    pub use super::project::{Presentation, RecalibrationReport, Segment};
+    pub use super::tts::DubSettings;
+    /// Alias para mantener el nombre usado en el shim de testing.
+    pub use super::tts::Engine as DubEngine;
+
+    pub fn crear_proyecto(
+        path: &Path,
+        nombre: &str,
+        origen: &str,
+        destino: &str,
+    ) -> Result<super::project::Project, String> {
+        super::project::create(path, nombre, origen, destino)
+    }
+
+    pub fn importar_pdf(path: &Path, pdf: &Path) -> Result<super::project::Project, String> {
+        super::project::import_pdf(path, pdf)
+    }
+
+    pub fn abrir(path: &Path) -> Result<super::project::Project, String> {
+        super::project::open(path)
+    }
+
+    pub fn importar_segmentos_json(
+        path: &Path,
+        json: &Path,
+    ) -> Result<super::project::Project, String> {
+        let manifest: super::project::Manifest = serde_json::from_str(
+            &std::fs::read_to_string(path.join("project.json"))
+                .map_err(|e| format!("no se pudo leer el manifiesto: {e}"))?,
+        )
+        .map_err(|e| format!("manifiesto inválido: {e}"))?;
+        let page_count = manifest.slides.as_ref().map(|s| s.page_count);
+        super::project::import_segments_json(path, json, page_count)
+    }
+
+    pub fn load_segments(path: &Path) -> Result<Vec<Segment>, String> {
+        super::project::load_segments(path)
+    }
+
+    pub fn render_presentacion(
+        path: &Path,
+        models_dir: &Path,
+        settings: &super::tts::DubSettings,
+        on_progress: impl Fn(usize, usize),
+    ) -> Result<super::project::RenderReport, String> {
+        super::project::render_presentation(path, models_dir, settings, on_progress)
+    }
+
+    pub fn regenerar_imagenes_pdf(path: &Path) -> Result<super::project::Project, String> {
+        super::project::regenerate_slide_pages(path)
+    }
+
+    pub fn planificar_tiempos_presentacion(
+        path: &Path,
+        duracion_seg: f64,
+    ) -> Result<super::project::Project, String> {
+        super::project::planificar_tiempos_presentacion(path, duracion_seg)
+    }
+
+    pub fn aplicar_tiempos_reales(
+        path: &Path,
+        on_progress: impl Fn(usize, usize),
+    ) -> Result<super::project::RecalibrationReport, String> {
+        super::project::aplicar_tiempos_reales(path, on_progress)
+    }
+
+    pub fn tiene_backup_timings(path: &Path) -> bool {
+        super::project::tiene_backup_timings(path)
+    }
+
+    pub fn restaurar_timings_originales(path: &Path) -> Result<super::project::Project, String> {
+        super::project::restaurar_timings_originales(path)
+    }
+
+    /// Crea un `MediaServer` y devuelve un handle de testing con su puerto.
+    /// Permite a los tests E2E verificar que las páginas rasterizadas se
+    /// sirven correctamente por HTTP, que es el camino que usa el frontend.
+    pub fn iniciar_media_server() -> Result<super::media_server::MediaServerHandle, String> {
+        let server = super::media_server::MediaServer::start()?;
+        Ok(super::media_server::MediaServerHandle {
+            port: server.puerto(),
+            token: server.token().to_string(),
+            inner: server,
+        })
+    }
+
+    pub fn path_buf(p: &str) -> PathBuf {
+        PathBuf::from(p)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Fija el proveedor criptográfico de rustls: con aws-lc-rs y ring presentes
@@ -404,8 +710,20 @@ pub fn run() {
             probar_voz_edge,
             generar_doblaje,
             generar_doblaje_segmento,
+            conteo_paginas_pdf,
+            importar_pdf,
+            importar_audio_presentacion,
+            importar_segmentos_json,
+            renderizar_presentacion,
+            regenerar_imagenes_pdf,
+            planificar_tiempos_presentacion,
+            aplicar_tiempos_reales,
+            tiene_backup_timings,
+            restaurar_timings_originales,
+            leer_segments_con_timing,
             forma_onda,
-            url_media
+            url_media,
+            url_slide
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -19,6 +19,8 @@ import type {
   EdgeVoice,
   DubEngine,
   DubResult,
+  RenderReport,
+  RecalibrationReport,
 } from "./types";
 
 const NIVEL_POR_DEFECTO = "base";
@@ -72,6 +74,13 @@ function App() {
   // Cambia con cada generación (masiva o por segmento) para que la Timeline
   // recargue las ondas del doblaje, incluso al regenerar un segmento ya doblado.
   const [dubVersion, setDubVersion] = useState(0);
+  // ADR-010: estado del render de la presentación (PDF + audio doblado).
+  const [renderingPresentation, setRenderingPresentation] = useState(false);
+  const [renderProgress, setRenderProgress] = useState<{ etapa: number; total: number } | null>(null);
+  // ADR-010: planificación y restauración de tiempos (modo presentación).
+  const [hasTimingsBackup, setHasTimingsBackup] = useState(false);
+  const [inPlaceholder, setInPlaceholder] = useState(false);
+  const [timingsWorking, setTimingsWorking] = useState(false);
 
   // Desactiva el zoom del webview (Ctrl+rueda, pellizco, Ctrl +/-/0): la app
   // no debe escalar como página web; el único zoom es el de la línea de tiempo.
@@ -221,6 +230,18 @@ function App() {
     // Los selectores reflejan los idiomas del proyecto abierto.
     setSourceLanguage(proyecto.manifest.source_language);
     setTargetLanguage(proyecto.manifest.target_language);
+    // El botón «Restaurar» aparece sólo si hay backup de timings.
+    void invoke<boolean>("tiene_backup_timings", { path: proyecto.path })
+      .then(setHasTimingsBackup)
+      .catch(() => setHasTimingsBackup(false));
+    // Lee el modo de planificación directamente de `segments.json` para
+    // mostrar el botón «Aplicar tiempos» sólo cuando aplica.
+    void invoke<{
+      segments: Segment[];
+      timing_mode: string | null;
+    }>("leer_segments_con_timing", { path: proyecto.path })
+      .then((data) => setInPlaceholder(data.timing_mode === "placeholder"))
+      .catch(() => setInPlaceholder(false));
   }
 
   // Cambia los idiomas: si hay proyecto, persiste en su manifiesto (el de origen
@@ -278,12 +299,34 @@ function App() {
   async function importarVideo() {
     if (!project) return;
     const ruta = await open({
-      title: "Importar video",
+      title: "Importar video o PDF",
       filters: [
         { name: "Video", extensions: ["mp4", "mkv", "webm", "mov", "avi"] },
+        { name: "PDF", extensions: ["pdf"] },
       ],
     });
     if (!ruta) return;
+    try {
+      const proyecto = await importarFuente(ruta);
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Importar", kind: "error" });
+    }
+  }
+
+  // Despacha al backend correcto según la extensión del archivo seleccionado
+  // (ADR-002 para video, ADR-010 para PDF). Devuelve el `Project` actualizado.
+  async function importarFuente(ruta: string): Promise<Project> {
+    if (!project) throw new Error("No hay proyecto abierto.");
+    const extension = ruta.split(".").pop()?.toLowerCase() ?? "";
+    if (extension === "pdf") {
+      return importarPdf(ruta);
+    }
+    return importarVideoSeleccionado(ruta);
+  }
+
+  async function importarVideoSeleccionado(ruta: string): Promise<Project> {
+    if (!project) throw new Error("No hay proyecto abierto.");
     // ADR-002: el video se copia o se referencia según preferencia del usuario.
     const copiar = await ask(
       "¿Copiar el video dentro del proyecto?\n\nCopiar: el proyecto queda autocontenido.\nReferenciar: se usa la ruta original sin duplicar el archivo.",
@@ -294,17 +337,27 @@ function App() {
         cancelLabel: "Solo referenciar",
       },
     );
-    try {
-      const proyecto = await invoke<Project>("importar_video", {
-        path: project.path,
-        video: ruta,
-        copiar,
-      });
-      // Solo se actualiza el proyecto: los segmentos locales sin guardar se conservan.
-      setProject(proyecto);
-    } catch (e) {
-      await message(String(e), { title: "Importar video", kind: "error" });
+    return await invoke<Project>("importar_video", {
+      path: project.path,
+      video: ruta,
+      copiar,
+    });
+  }
+
+  async function importarPdf(ruta: string): Promise<Project> {
+    if (!project) throw new Error("No hay proyecto abierto.");
+    const pageCount = await invoke<number>("conteo_paginas_pdf", { pdf: ruta });
+    const continuar = await ask(
+      `El PDF tiene ${pageCount} páginas. Se copiará al proyecto.\n\n¿Continuar?`,
+      { title: "Importar PDF", kind: "info" },
+    );
+    if (!continuar) {
+      throw new Error("Importación cancelada.");
     }
+    return await invoke<Project>("importar_pdf", {
+      path: project.path,
+      pdf: ruta,
+    });
   }
 
   async function extraerAudio() {
@@ -477,6 +530,215 @@ function App() {
     setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, ...cambios } : s)));
   }
 
+  // ADR-010: importa un audio arbitrario cuando el proyecto no tiene video.
+  async function importarAudioPresentacion() {
+    if (!project) return;
+    if (project.audio_path) {
+      await message(
+        "El proyecto ya tiene audio extraído. Reimporta el video o el PDF para reemplazarlo.",
+        { title: "Importar audio", kind: "warning" },
+      );
+      return;
+    }
+    const ruta = await open({
+      title: "Importar audio",
+      filters: [
+        { name: "Audio", extensions: ["wav", "mp3", "m4a", "ogg", "flac"] },
+      ],
+    });
+    if (!ruta) return;
+    try {
+      const proyecto = await invoke<Project>("importar_audio_presentacion", {
+        path: project.path,
+        audio: ruta,
+      });
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Importar audio", kind: "error" });
+    }
+  }
+
+  // ADR-010: importa segmentos desde un JSON externo. Sobrescribe los actuales
+  // previa confirmación.
+  async function importarSegmentosJson() {
+    if (!project) return;
+    const ruta = await open({
+      title: "Importar segmentos (JSON)",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!ruta) return;
+    if (segments.length > 0) {
+      const continuar = await ask(
+        "Esto reemplazará todos los segmentos actuales. ¿Continuar?",
+        { title: "Importar segmentos", kind: "warning" },
+      );
+      if (!continuar) return;
+    }
+    try {
+      const proyecto = await invoke<Project>("importar_segmentos_json", {
+        path: project.path,
+        json: ruta,
+      });
+      cargarProyecto(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Importar segmentos", kind: "error" });
+    }
+  }
+
+  // ADR-010: renderiza el video de presentación y deja el mp4 en `exports/`.
+  // Auto-dobla los segmentos traducidos que aún no tengan WAV usando el
+  // motor y la voz configurados, así el usuario no tiene que pasar por
+  // «Generar todas» en la Timeline antes de exportar.
+  async function renderizarPresentacion() {
+    if (!project) return;
+    setRenderingPresentation(true);
+    setRenderProgress({ etapa: 0, total: 2 });
+    const desuscribir = await listen<{ etapa: number; total: number }>(
+      "presentacion:progreso",
+      (e) => setRenderProgress({ etapa: e.payload.etapa, total: e.payload.total }),
+    );
+    try {
+      await guardarProyecto();
+      const reporte = await invoke<RenderReport>("renderizar_presentacion", {
+        path: project.path,
+        ajustes: { engine: dubEngine, voice: dubVoice },
+      });
+      await message(
+        `Video generado en ${reporte.output}\nDuración: ${reporte.duration_secs.toFixed(1)} s`,
+        { title: "Exportar video", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Exportar video", kind: "error" });
+    } finally {
+      desuscribir();
+      setRenderingPresentation(false);
+      setRenderProgress(null);
+    }
+  }
+
+  // ADR-010: aplica manualmente las duraciones reales de los WAV a los
+// `start`/`end` de los segmentos. Es un atajo al auto-trigger que ya
+// dispara `generate_dub` al terminar; aquí lo exponemos como botón
+// explícito por si el usuario regenera audios por su cuenta y quiere
+// forzar la recalibración.
+async function aplicarTiempos() {
+    if (!project) return;
+    setTimingsWorking(true);
+    try {
+      const reporte = await invoke<RecalibrationReport>("aplicar_tiempos_reales", {
+        path: project.path,
+      });
+      const proyecto = await invoke<Project>("abrir_proyecto", { path: project.path });
+      cargarProyecto(proyecto);
+      await message(
+        `Tiempos aplicados: ${reporte.recalibrated} segmento(s) recalibrado(s), ${reporte.kept} silencio(s).`,
+        { title: "Aplicar tiempos", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Aplicar tiempos", kind: "error" });
+    } finally {
+      setTimingsWorking(false);
+    }
+  }
+
+  // ADR-010: planificación de tiempos. Pone cada segmento a 2 s secuencial
+  // para que el doblaje posterior se haga a velocidad natural y los tiempos
+  // reales se apliquen al terminar. Crea un backup único la primera vez;
+  // confirma antes si el proyecto ya tiene un cálculo previo o si el
+  // usuario invirtió tiempo en los `start`/`end` actuales.
+  async function eliminarTiempos() {
+    if (!project) return;
+    if (project.slides_path == null) {
+      await message(
+        "Importa un PDF antes de planificar los tiempos.",
+        { title: "Eliminar tiempos", kind: "warning" },
+      );
+      return;
+    }
+    if (segments.length === 0) {
+      await message(
+        "No hay segmentos para planificar.",
+        { title: "Eliminar tiempos", kind: "warning" },
+      );
+      return;
+    }
+    const aviso = hasTimingsBackup
+      ? "Esto reemplazará los tiempos actuales por slots de 2 s. Ya hay un backup, así que «Restaurar» seguirá llevando al estado previo. ¿Continuar?"
+      : "Esto reemplazará los tiempos actuales por slots de 2 s para que los audios se doblen en orden natural. Se creará un backup para poder restaurar después. ¿Continuar?";
+    const continuar = await ask(aviso, {
+      title: "Eliminar tiempos",
+      kind: "warning",
+    });
+    if (!continuar) return;
+    setTimingsWorking(true);
+    try {
+      await guardarProyecto();
+      const proyecto = await invoke<Project>("planificar_tiempos_presentacion", {
+        path: project.path,
+        duracionSeg: 2.0,
+      });
+      cargarProyecto(proyecto);
+      await message(
+        `Tiempos planificados a 2 s por segmento (${segments.length} en total). ` +
+          "Genera los audios (botón «Generar todas» o por segmento desde el panel). " +
+          "Al terminar, las duraciones reales se aplican automáticamente, " +
+          "o puedes pulsar «Aplicar tiempos» para forzarlo.",
+        { title: "Eliminar tiempos", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Eliminar tiempos", kind: "error" });
+    } finally {
+      setTimingsWorking(false);
+    }
+  }
+
+  // ADR-010: restauración de tiempos. Revierte `segments.json` al estado
+  // guardado en `timings.original.json` y borra el backup. Falla con un
+  // mensaje claro si el backup ya no existe (botón deshabilitado en ese
+  // caso, pero el usuario podría haber borrado el archivo a mano).
+  async function restaurarTiempos() {
+    if (!project) return;
+    const continuar = await ask(
+      "Esto restaura los `start`/`end` originales de los segmentos y borra el backup. ¿Continuar?",
+      { title: "Restaurar tiempos", kind: "warning" },
+    );
+    if (!continuar) return;
+    setTimingsWorking(true);
+    try {
+      const proyecto = await invoke<Project>("restaurar_timings_originales", {
+        path: project.path,
+      });
+      cargarProyecto(proyecto);
+      await message(
+        "Tiempos originales restaurados.",
+        { title: "Restaurar tiempos", kind: "info" },
+      );
+    } catch (e) {
+      await message(String(e), { title: "Restaurar tiempos", kind: "error" });
+      // Si falló por backup perdido, refrescamos el flag para ocultar el botón.
+      void invoke<boolean>("tiene_backup_timings", { path: project.path })
+        .then(setHasTimingsBackup)
+        .catch(() => setHasTimingsBackup(false));
+    } finally {
+      setTimingsWorking(false);
+    }
+  }
+
+  // ADR-010: regenera las imágenes del PDF a partir del PDF persistido.
+  // Útil cuando la auto-recuperación del `open` no aplicó (PDF perdido,
+  // error al importar) y el usuario no quiere reimportar todavía.
+  async function regenerarImagenesPdf() {
+    if (!project) return;
+    try {
+      const proyecto = await invoke<Project>("regenerar_imagenes_pdf", {
+        path: project.path,
+      });
+      setProject(proyecto);
+    } catch (e) {
+      await message(String(e), { title: "Regenerar imágenes", kind: "error" });
+    }
+  }
+
   return (
     <div className="app">
       <TopBar
@@ -504,6 +766,34 @@ function App() {
         onImportTranslation={importarTraduccion}
         onTranslateLocal={traducirLocal}
         onOpenModels={() => setShowModels(true)}
+        onImportAudioPresentation={importarAudioPresentacion}
+        onImportSegmentsJson={importarSegmentosJson}
+        onExportPresentation={renderizarPresentacion}
+        canExportPresentation={
+          project?.slides_path != null &&
+          segments.some(
+            (s) =>
+              s.translation.trim().length > 0 ||
+              s.source.trim().length > 0,
+          ) &&
+          dubVoice !== ""
+        }
+        segmentsToDubCount={
+          segments.filter(
+            (s) =>
+              (s.translation.trim().length > 0 ||
+                s.source.trim().length > 0) &&
+              !(project?.dubs.includes(s.id) ?? false),
+          ).length
+        }
+        renderingPresentation={renderingPresentation}
+        renderProgress={renderProgress}
+        onEliminarTiempos={eliminarTiempos}
+        onAplicarTiempos={aplicarTiempos}
+        onRestaurarTiempos={restaurarTiempos}
+        hasTimingsBackup={hasTimingsBackup}
+        inPlaceholder={inPlaceholder}
+        timingsWorking={timingsWorking}
       />
       <div className="app__body">
         <aside className="app__left">
@@ -518,6 +808,12 @@ function App() {
             videoPath={project?.video_path ?? null}
             hasProject={project !== null}
             videoRef={setVideoEl}
+            projectPath={project?.path ?? null}
+            slidesPath={project?.slides_path ?? null}
+            slidesPageCount={project?.slides_page_count ?? null}
+            segments={segments}
+            selectedId={selectedId}
+            onRegenerarSlides={regenerarImagenesPdf}
           />
         </main>
         <aside className="app__right">
@@ -535,6 +831,8 @@ function App() {
             hasDub={selectedId != null && (project?.dubs.includes(selectedId) ?? false)}
             existingDubUrl={selectedDubUrl}
             onGenerateSegment={generarDoblajeSegmento}
+            slidesPageCount={project?.slides_page_count ?? null}
+            targetLanguage={targetLanguage}
           />
         </aside>
       </div>
@@ -549,7 +847,13 @@ function App() {
           projectPath={project?.path ?? null}
           dubs={project?.dubs ?? []}
           dubVersion={dubVersion}
-          canDub={segments.some((s) => s.translation.trim().length > 0) && dubVoice !== ""}
+          canDub={
+            segments.some(
+              (s) =>
+                s.translation.trim().length > 0 ||
+                s.source.trim().length > 0,
+            ) && dubVoice !== ""
+          }
           dubbing={dubbing}
           dubProgress={dubProgress}
           onGenerateDub={generarDoblaje}

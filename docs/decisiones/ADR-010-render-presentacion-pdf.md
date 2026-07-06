@@ -1,0 +1,113 @@
+# ADR-010: Render de presentación con PDF + segmentos con slide
+
+- Fecha: 2026-07-02
+- Estado: Propuesta
+- Decisor: Nicolás Baier
+- Cierra: issue #18
+
+## Contexto
+
+Hoy un proyecto `.lqzx` asume video fuente (`source/` + `media/audio.wav`) y produce un mp4 final al exportar (futuro). Hay un caso de uso claro y frecuente: el usuario ya tiene la **presentación** en un PDF y los textos que la acompañan, y quiere **narrarla en otro idioma sin grabar video**. La transcripción con whisper no aplica cuando no hay audio del usuario (y aunque lo hubiera, el material de fondo es el PDF, no un video).
+
+El modelo de proyecto actual ya adopta el patrón "fuente opcional" (el campo `source` en el manifiesto es opcional para no romper proyectos previos, ADR-002). Se propone extenderlo:
+
+- El campo `slides` pasa a ser una segunda fuente opcional e independiente de `source`.
+- Cada `Segment` puede llevar el número de página del PDF (`slide: 1..N`) que debe mostrarse durante su intervalo `[start, end)`.
+- Un nuevo comando `renderizar_presentacion` produce el mp4 final sincronizando páginas del PDF con los huecos y mezclando los WAV de doblaje de `runs/dub/`.
+
+Si en un mismo proyecto conviven `source` y `slides`, hoy manda `source` (el flujo video se mantiene); el render de presentación queda como ruta explícita desde la barra superior ("Exportar video" se habilita cuando hay `slides`).
+
+## Alternativas evaluadas
+
+1. **Formato de proyecto aparte (`*.lqzx-presentation` o carpeta distinta).** Aísla bien los dos modos pero duplica el shell (creación, apertura, guardado, traductor, doblaje). Multiplica la superficie a mantener para un feature que es esencialmente el mismo pipeline con otra fuente visual.
+2. **Slides como assets sueltos (imágenes una por segmento, sin PDF).** Más simple de implementar pero le exige al usuario cortar el PDF a mano o generar imágenes. Pierde la noción de "página" y rompe el caso de uso real (el usuario ya tiene un PDF).
+3. **Misma plantilla, fuente opcional `slides` en el manifiesto, comando `renderizar_presentacion` con `ffmpeg` y `pdftoppm`.** Reusa todo el pipeline existente (segmentos, traducción, doblaje), sólo cambia la fuente visual y la etapa de exportación. Consistente con la decisión de ADR-002 de hacer `source` opcional.
+
+## Decisión
+
+Se adopta la **alternativa 3**: misma plantilla `.lqzx`, fuente opcional `slides`, render en backend con `ffmpeg` (ADR-003) y `pdftoppm` de Poppler para rasterizar páginas.
+
+### Cambios al formato
+
+`project.json` gana un campo opcional:
+
+```json
+"slides": {
+  "file": "slides/original.pdf",
+  "page_count": 12,
+  "imported_at": 1720123456
+}
+```
+
+Ausente en proyectos previos: el campo es `#[serde(default, skip_serializing_if = "Option::is_none")]` igual que `source`. Se persiste la copia bajo `slides/` (por paralelismo con `source/`).
+
+`Segment` gana un campo opcional `slide: number | null`:
+
+```json
+{ "id": "...", "start": 0.0, "end": 4.2, "source": "...", "translation": "...", "slide": 2 }
+```
+
+`null` significa "mostrar la última página vista" (al inicio del video se asume la 1). Numeración 1‑based, validada contra `page_count` en la UI y al renderizar.
+
+### Backend
+
+Nuevo módulo `presentacion.rs`:
+
+- `rasterizar_pdf(pdf, out_dir) -> Result<u32>` invoca `pdftoppm -r 300 -png <pdf> <out_dir>/page`; devuelve `page_count`. Se llama **al importar** el PDF (no al renderizar), para que el preview de la UI y el render final usen las mismas imágenes pre-generadas en `slides/pages/`. 300 DPI garantiza nitidez en Full HD y superior sin saltos visibles al proyectar. Si `pdftoppm` no está en `PATH`, error explícito (mismo principio que ADR-003 para `ffmpeg`).
+- `calcular_pista_audio(segments, dub_dir, total_dur) -> PathBuf` concatena los `runs/dub/<id>.wav` con `ffmpeg` y el demuxer `concat`, insertando silencio (`anullsrc`) en los huecos entre segmentos para que la duración total coincida con la del último `end` (o el mayor entre `end` y `page_count * dur_por_pagina`, lo que sea mayor).
+- `calcular_timeline_imagenes(segments, page_count, total_dur)` arma el `concat.txt` de ffmpeg con `-loop 1 -t <dur> -i page_N.png` por cada bloque entre cambios de `slide`. Si ningún segmento tiene `slide`, todo el video usa la página 1.
+- `render(...)`: pipeline `ffmpeg -f concat -safe 0 -i imgs.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -shortest -movflags +faststart out.mp4`. `-movflags +faststart` para que el mp4 abra rápido al servirse por el `MediaServer` (ADR-005).
+
+Comandos Tauri nuevos:
+
+| Comando | Notas |
+|---|---|
+| `importar_pdf(path, pdf)` | Copia al proyecto, persiste `page_count`. |
+| `conteo_paginas_pdf(pdf)` | Devuelve el `page_count` sin copiar; útil para validación previa. |
+| `importar_audio_presentacion(path, audio)` | Importa audio arbitrario cuando no hay video. |
+| `importar_segmentos_json(path, json)` | Importa segmentos externos `{start, end, slide, source}` con `id = uuid` y `translation = ""`. |
+| `renderizar_presentacion(path)` | Produce el mp4; emite `presentacion:progreso`. |
+
+El mp4 final va a `exports/<nombre>.mp4` (paralelo a `traduccion-solicitud.json`).
+
+### Frontend
+
+- `TopBar`: cuatro botones nuevos: "Importar PDF" (`FileText`), "Importar audio" (`Music`), "Importar segmentos JSON" (`FilePlus2`), "Exportar video" (`Clapperboard`). El último se habilita cuando hay `slides` y al menos un segmento doblado.
+- `VideoPreview`: cuando no hay video pero sí `slides`, muestra la página activa del PDF según el `currentTime` del reproductor virtual. Las páginas se pre-rasterizan al importar el PDF y se sirven por `url_media` (ADR-005), igual que el video.
+- `EditPanel`: campo numérico "Diapositiva" (1‑based, con `max={page_count}`) por segmento. Persiste al cambiar de segmento y al guardar.
+- `SegmentsList`: muestra `p.N` al lado del tiempo.
+- `Timeline`: pista "Slides" opcional que cambia de color cuando cambia la página (sólo visual; no editable en este PR).
+
+## Consecuencias
+
+- La app gana una dependencia externa asumida: `pdftoppm` (poppler). Está en los repos oficiales de todas las distros Linux (`poppler-utils`); para Windows y macOS se documentará en el README junto con ffmpeg.
+- `Segment` cambia de esquema; los proyectos previos no se rompen por el `#[serde(default)]`.
+- El render de presentación convive con el flujo de video, pero en esta versión no se mezclan: si el proyecto tiene `source`, se usa la ruta de exportación existente (futuro); si tiene `slides` solamente, se ofrece el render de presentación. La coexistencia mixta se documenta como limitación.
+- Los WAV de doblaje se reusan tal cual: el modo presentación no requiere regenerar audio.
+- Las páginas del PDF se rasterizan una sola vez al importar y se sirven por el `MediaServer` local (ADR-005) tanto para el preview como para el render final. Esto simplifica el render (no depende de `pdftoppm`) y garantiza coherencia visual entre lo que se ve y lo que se exporta. Si el usuario manipula el proyecto a mano y borra las imágenes, el render falla con un mensaje claro que sugiere reimportar.
+- Las imágenes a 300 DPI ocupan ~3–4 MB por página; un proyecto de 50 páginas pesa ~150–200 MB adicionales, aceptable para un proyecto autocontenido.
+- Los tests que rasterizan PDF o invocan ffmpeg se saltean si la dependencia no está, mismo patrón que `extract_audio` (ADR-003).
+
+## Fuera de alcance
+
+- Subtítulos quemados en el mp4 (issue aparte; requiere `libass` en ffmpeg).
+- Generación de PDF a partir de las imágenes del proyecto (dirección opuesta, sin demanda).
+- Multi‑idioma de salida en la exportación (se sigue doblando solo al `target_language`).
+- Edición visual del `slide` arrastrando bloques en la `Timeline` (queda como mejora futura; en este PR se edita por segmento desde el `EditPanel`).
+
+### Recalibración de timings
+
+Cuando los `start`/`end` provienen de un import externo o de OCR aproximado, comprimir el audio de doblaje con `atempo` para que entre justo en el hueco degrada la naturalidad de la voz. La recalibración invierte la ecuación en el modo presentación: deja que la duración real del audio dicte los tiempos.
+
+**Decisión.** Dos comandos Tauri nuevos operan sobre el modo presentación únicamente (cuando `manifest.slides.is_some()`); el modo video queda intacto:
+
+- `planificar_tiempos_presentacion(path, duracion_seg)`: pone cada segmento a `duracion_seg` segundos (por defecto 2 s), encadenados desde 0. La primera vez copia `segments.json` a `timings.original.json` como backup único; llamadas subsiguientes no lo sobrescriben. Persiste con `SegmentsFile.timing_mode = "placeholder"`.
+- `aplicar_tiempos_reales(path, on_progress)`: sintetiza los WAV faltantes a velocidad natural (`tts::synth_segment(..., None, ...)` salta `fit_duration`), mide la duración natural de cada WAV con `audio::wav_duration` y reasigna `start`/`end` cumulativamente: `start = cursor`, `end = cursor + dur`, `cursor = end`. Limpia `timing_mode` y persiste.
+
+**Auto-trigger.** `generate_dub` y `render_presentation` detectan el modo placeholder + `manifest.slides.is_some()` y aplican `aplicar_tiempos_reales` al terminar la generación, sin intervención de la UI. El modo video nunca dispara este camino.
+
+**Flujo del usuario.** Botón «Eliminar tiempos» en la `TopBar` (icono `Wand2`) llama a `planificar_tiempos_presentacion` y crea el backup. El usuario genera los audios (botón masivo de la `Timeline`, por segmento desde el `EditPanel`, o vía auto-doblaje del render). Cuando todos los audios están listos, los tiempos reales se aplican automáticamente y el botón «Exportar video» produce un mp4 cuya duración coincide con la suma de WAVs. Botón «Restaurar» (icono `RotateCcw`, sólo visible si hay backup) revierte a los `start`/`end` originales y borra el backup.
+
+**Tipos y comandos Tauri nuevos.** `RecalibrationReport { recalibrated, kept }`; `segments.json` gana `timing_mode: Option<String>` (`#[serde(default, skip_serializing_if = "Option::is_none")]`); comandos `planificar_tiempos_presentacion`, `aplicar_tiempos_reales`, `tiene_backup_timings`, `restaurar_timings_originales`.
+
+**Tests.** Cuatro unitarios en `project::tests` (`planificar_pone_cada_segmento_a_2s_y_marca_placeholder`, `planificar_no_sobrescribe_backup_existente`, `aplicar_reasigna_con_duraciones_naturales_de_wav`, `restaurar_vuelve_al_estado_original_y_borra_backup`) más un E2E `planificar_y_aplicar_tiempos_presentacion` (marcado `#[ignore]`) en `tests/render_presentacion.rs`.

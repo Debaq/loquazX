@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { LANGUAGES } from "../languages";
 import type { DubEngine, EdgeVoice, Segment, VoiceInfo } from "../types";
 
 interface Props {
@@ -21,6 +22,10 @@ interface Props {
   existingDubUrl: string | null;
   /** Genera (o regenera) el doblaje del segmento y devuelve la URL para oírlo. */
   onGenerateSegment: () => Promise<string | null>;
+  /** Conteo de páginas del PDF importado (ADR-010); deshabilita el campo slide si es null. */
+  slidesPageCount: number | null;
+  /** Idioma de salida del proyecto (código ISO corto). */
+  targetLanguage: string;
 }
 
 function EditPanel({
@@ -37,6 +42,8 @@ function EditPanel({
   hasDub,
   existingDubUrl,
   onGenerateSegment,
+  slidesPageCount,
+  targetLanguage,
 }: Props) {
   const [generating, setGenerating] = useState(false);
   const [dubUrl, setDubUrl] = useState<string | null>(null);
@@ -57,7 +64,12 @@ function EditPanel({
 
   const voces = engine === "piper" ? piperVoices : edgeVoices;
   const sinVoces = voces.length === 0;
-  const sinTraduccion = segment.translation.trim().length === 0;
+  // Habilita el botón apenas haya un texto (origen o traducción) para doblar.
+  // En el modo presentación es habitual narrar el PDF en su idioma original
+  // sin traducir; en el modo video la traducción suele estar y manda.
+  const sinTexto =
+    segment.translation.trim().length === 0 &&
+    segment.source.trim().length === 0;
 
   async function generar() {
     setGenerating(true);
@@ -93,6 +105,37 @@ function EditPanel({
           placeholder="Ingresa la traducción…"
         />
       </label>
+
+      {slidesPageCount != null && (
+        <label className="edit__field">
+          <span>
+            Diapositiva{" "}
+            {segment.slide != null ? `(p.${segment.slide})` : "(sin asignar)"}
+          </span>
+          <input
+            type="number"
+            min={1}
+            max={slidesPageCount}
+            value={segment.slide ?? ""}
+            placeholder="—"
+            onChange={(e) => {
+              const raw = e.target.value.trim();
+              if (raw === "") {
+                onChange(segment.id, { slide: null });
+                return;
+              }
+              const n = Number(raw);
+              if (!Number.isFinite(n)) return;
+              const clamped = Math.max(1, Math.min(slidesPageCount, Math.trunc(n)));
+              onChange(segment.id, { slide: clamped });
+            }}
+          />
+          <span className="edit__hint">
+            Página del PDF que se muestra durante este segmento (1–{slidesPageCount}).
+            Déjalo vacío para mantener la última diapositiva.
+          </span>
+        </label>
+      )}
 
       <div className="edit__voice">
         <div className="edit__field-title">Voz</div>
@@ -145,18 +188,46 @@ function EditPanel({
           <button
             type="button"
             onClick={generar}
-            disabled={generating || sinVoces || !voice || sinTraduccion}
+            disabled={generating || sinVoces || !voice || sinTexto}
           >
             {generating ? "Generando…" : hasDub ? "Regenerar" : "Generar audio"}
           </button>
         </div>
 
-        {sinTraduccion && (
-          <div className="edit__hint">Traduce el segmento antes de doblarlo.</div>
-        )}
-        {engine === "piper" && sinVoces && !sinTraduccion && (
+        {sinTexto && (
           <div className="edit__hint">
-            Descarga una voz Piper del idioma de salida desde «Modelos y voces».
+            Escribe el texto origen o la traducción del segmento antes de
+            doblarlo.
+          </div>
+        )}
+        {!sinTexto && sinVoces && engine === "piper" && (
+          <div className="edit__hint">
+            No hay voces Piper del idioma de salida (
+            <strong>
+              {LANGUAGES.find((l) => l.code === targetLanguage)?.label ??
+                targetLanguage}
+            </strong>
+            ) descargadas. Abre «Modelos y voces» (icono de CPU en la barra
+            superior) y descarga una. Mientras tanto puedes cambiar a edge-tts
+            (online) arriba.
+          </div>
+        )}
+        {!sinTexto && sinVoces && engine === "edge-tts" && (
+          <div className="edit__edit-hint-row">
+            <div className="edit__hint">
+              {loadingEdgeVoices
+                ? "Cargando voces de Microsoft…"
+                : "Las voces edge-tts no se cargan por defecto (requiere red)."}
+            </div>
+            {!loadingEdgeVoices && (
+              <button
+                type="button"
+                className="edit__hint-btn"
+                onClick={onLoadEdgeVoices}
+              >
+                Cargar voces
+              </button>
+            )}
           </div>
         )}
         <div className="edit__hint">

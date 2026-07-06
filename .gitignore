@@ -37,3 +37,6 @@ __pycache__/
 runs/
 work/
 models/
+
+# Scripts generados por herramientas locales (no son parte del repo)
+loquazx.sh
