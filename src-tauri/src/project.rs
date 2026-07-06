@@ -1308,6 +1308,25 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// PDF mínimo embebido (1 página en blanco, US Letter). Se usa en los
+    /// tests de `planificar_*`/`aplicar_*`/`restaurar_*` para no depender
+    /// de `python3`/`reportlab` ni de internet. `pdftoppm` lo acepta y lo
+    /// rasteriza a `slides/pages/page-1.png` sin problemas.
+    const PDF_MINIMO_1_PAGINA: &[u8] = b"%PDF-1.4\n\
+1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n\
+2 0 obj\n<</Type/Pages/Count 1/Kids[3 0 R]>>\nendobj\n\
+3 0 obj\n<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>\nendobj\n\
+xref\n\
+0 4\n\
+0000000000 65535 f \n\
+0000000009 00000 n \n\
+0000000052 00000 n \n\
+0000000101 00000 n \n\
+trailer\n<</Size 4/Root 1 0 R>>\n\
+startxref\n\
+148\n\
+%%EOF\n";
+
     fn segmento_demo() -> Segment {
         Segment {
             id: "s1".into(),
@@ -1620,31 +1639,17 @@ mod tests {
     /// Helper: crea un proyecto en modo presentación (con PDF) y graba N
     /// segmentos con `start`/`end` arbitrarios para los tests de
     /// planificación de tiempos. Devuelve la ruta del proyecto.
+    ///
+    /// El PDF es un único archivo en blanco embebido en el binario (no
+    /// depende de `python3`/`reportlab` en CI): una sola página con
+    /// `MediaBox` US Letter y nada más. Sirve para que `import_pdf`
+    /// rasterice una imagen con `pdftoppm` y el ciclo de planificación
+    /// funcione.
     fn proyecto_con_pdf_y_segmentos(dir: &Path, n: usize) -> std::path::PathBuf {
-        use std::process::Command;
         let ruta = dir.join("demo.lqzx");
         create(&ruta, "Demo", "es", "en").unwrap();
-        // PDF mínimo: un script de reportlab que escribe una página en blanco.
-        let pdf_dir = dir.join("pdf");
-        std::fs::create_dir_all(&pdf_dir).unwrap();
-        let script = pdf_dir.join("gen.py");
-        let pdf = pdf_dir.join("f.pdf");
-        std::fs::write(
-            &script,
-            format!(
-                "from reportlab.pdfgen import canvas\n\
-                 c = canvas.Canvas('{}')\n\
-                 c.showPage()\n\
-                 c.save()\n",
-                pdf.display(),
-            ),
-        )
-        .unwrap();
-        let status = Command::new("python3")
-            .arg(&script)
-            .status()
-            .expect("python3 debe estar instalado para este test");
-        assert!(status.success(), "no se pudo generar el PDF");
+        let pdf = dir.join("f.pdf");
+        std::fs::write(&pdf, PDF_MINIMO_1_PAGINA).unwrap();
         import_pdf(&ruta, &pdf).unwrap();
 
         // Segmentos con tiempos arbitrarios: 1.7, 2.3, 0.9 s — verifican que
